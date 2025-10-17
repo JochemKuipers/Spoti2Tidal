@@ -407,27 +407,33 @@ class Tidal:
         self.logger.info(
             f"Resolving best match for ISRC: {isrc}, name: {name}, artist: {artist}"
         )
+        # Use normalized forms for search queries; keep originals for scoring/display
+        search_name = self._normalize_text(name)
+        search_artist = ", ".join(
+            a.strip() for a in (artist or "").split(",") if a.strip()
+        )
+        search_artist_norm = self._normalize_text(search_artist) if search_artist else None
         candidates: List[tidalapi.media.Track] = []
         if isrc:
             candidates = self.search_by_isrc(isrc)
         # Always include name-based candidates
-        name_candidates: List[tidalapi.media.Track] = self.search_by_name(name)
+        name_candidates: List[tidalapi.media.Track] = self.search_by_name(search_name)
         if name_candidates:
             candidates.extend(name_candidates)
         # Always include name+artist candidates when artist is available
-        if artist:
-            name_artist_candidates = self.search_by_name_artist(name, artist)
+        if search_artist_norm:
+            name_artist_candidates = self.search_by_name_artist(search_name, search_artist_norm)
             if name_artist_candidates:
                 candidates.extend(name_artist_candidates)
         # Additional fallbacks: try each individual artist with the title
-        if not candidates and artist:
-            for part in [a.strip() for a in (artist or "").split(",") if a.strip()]:
-                more = self.search_by_name_artist(name, part)
+        if not candidates and search_artist_norm:
+            for part in [a.strip() for a in search_artist_norm.split(",") if a.strip()]:
+                more = self.search_by_name_artist(search_name, part)
                 if more:
                     candidates.extend(more)
         # Try including album keyword to disambiguate
         if not candidates and album:
-            more = self._search_tracks(f"{name} {album}", limit=25)
+            more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
             if more:
                 candidates.extend(more)
         # de-duplicate by id
