@@ -9,7 +9,7 @@ from src.logging_config import setup_logging
 
 
 SPOTIFY_TRACK_URL = (
-    "https://open.spotify.com/track/3k7kjsfhINLdYzl8kPFlGB?si=8c8f66ff61e14a28"
+    "https://open.spotify.com/track/19WYLsyuAGTFqzvnXIlVxB?si=c6785914f52d4c27"
 )
 
 
