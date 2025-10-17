@@ -131,17 +131,23 @@ class MainWindow(QMainWindow):
         container = QWidget()
         root = QVBoxLayout(container)
 
-        # Top controls
+        # Step 1: Connect your accounts
+        step1 = QLabel("Step 1: Connect your accounts")
+        step1.setStyleSheet("font-weight: 600;")
+        root.addWidget(step1)
+
         top = QHBoxLayout()
         self.btn_sp_login = QPushButton("Connect Spotify")
+        self.btn_sp_login.setToolTip("Sign in to your Spotify account")
         self.btn_td_login = QPushButton("Login TIDAL")
+        self.btn_td_login.setToolTip("Sign in to your TIDAL account")
+        top.addWidget(self.btn_sp_login)
+        top.addWidget(self.btn_td_login)
+        top.addStretch(1)
         self.status_label = QLabel("Ready")
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.progress.setTextVisible(True)
-        top.addWidget(self.btn_sp_login)
-        top.addWidget(self.btn_td_login)
-        top.addStretch(1)
         top.addWidget(self.status_label)
         top.addWidget(self.progress)
         root.addLayout(top)
@@ -152,22 +158,46 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_tidal_tab(), "TIDAL")
         root.addWidget(tabs)
 
-        # Transfer section
-        transfer_bar = QHBoxLayout()
-        self.btn_fetch = QPushButton("Fetch Playlists")
-        self.btn_crossref = QPushButton("Cross-reference")
-        self.btn_transfer = QPushButton("Transfer to TIDAL")
-        transfer_bar.addWidget(self.btn_fetch)
-        transfer_bar.addWidget(self.btn_crossref)
-        transfer_bar.addWidget(self.btn_transfer)
-        transfer_bar.addStretch(1)
-        root.addLayout(transfer_bar)
+        # Step 2: Refresh playlists
+        step2 = QLabel("Step 2: Refresh playlists")
+        step2.setStyleSheet("font-weight: 600;")
+        root.addWidget(step2)
+
+        fetch_bar = QHBoxLayout()
+        self.btn_refresh_sp = QPushButton("Refresh Spotify")
+        self.btn_refresh_sp.setToolTip("Fetch your Spotify playlists")
+        self.btn_refresh_td = QPushButton("Refresh TIDAL")
+        self.btn_refresh_td.setToolTip("Fetch your TIDAL playlists")
+        self.btn_fetch = QPushButton("Refresh Both")
+        self.btn_fetch.setToolTip("Fetch playlists from both Spotify and TIDAL")
+        fetch_bar.addWidget(self.btn_refresh_sp)
+        fetch_bar.addWidget(self.btn_refresh_td)
+        fetch_bar.addWidget(self.btn_fetch)
+        fetch_bar.addStretch(1)
+        root.addLayout(fetch_bar)
+
+        # Step 3 and 4
+        step34 = QLabel("Step 3: Cross-reference  |  Step 4: Push to TIDAL")
+        step34.setStyleSheet("font-weight: 600;")
+        root.addWidget(step34)
+
+        actions_bar = QHBoxLayout()
+        self.btn_crossref = QPushButton("Step 3: Cross-reference Selected Playlist")
+        self.btn_crossref.setToolTip("Match tracks from the selected Spotify playlist to TIDAL")
+        self.btn_transfer = QPushButton("Step 4: Push to TIDAL")
+        self.btn_transfer.setToolTip("Create/update the TIDAL playlist with matched tracks")
+        actions_bar.addWidget(self.btn_crossref)
+        actions_bar.addWidget(self.btn_transfer)
+        actions_bar.addStretch(1)
+        root.addLayout(actions_bar)
 
         # Cross-reference results table
         self.xref_table = QTableWidget(0, 4)
-        self.xref_table.setHorizontalHeaderLabels(
-            ["Spotify", "Match (TIDAL)", "Quality", "Status"]
-        )
+        self.xref_table.setHorizontalHeaderLabels(["Spotify", "Match (TIDAL)", "Quality", "Status"])
+        self.xref_table.setAlternatingRowColors(True)
+        self.xref_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.xref_table.setSortingEnabled(True)
+        self.xref_table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.xref_table)
 
         self.setCentralWidget(container)
@@ -175,7 +205,10 @@ class MainWindow(QMainWindow):
         # Signals
         self.btn_sp_login.clicked.connect(self._connect_spotify)
         self.btn_td_login.clicked.connect(self._connect_tidal)
-        self.btn_fetch.clicked.connect(self._fetch_all)
+        # Scoped refresh: set scope flag and call unified fetch
+        self.btn_refresh_sp.clicked.connect(lambda: (setattr(self, "_fetch_scope", "spotify"), self._fetch_all()))
+        self.btn_refresh_td.clicked.connect(lambda: (setattr(self, "_fetch_scope", "tidal"), self._fetch_all()))
+        self.btn_fetch.clicked.connect(lambda: (setattr(self, "_fetch_scope", "both"), self._fetch_all()))
         self.btn_crossref.clicked.connect(self._cross_reference)
         self.btn_transfer.clicked.connect(self._transfer)
 
@@ -185,22 +218,27 @@ class MainWindow(QMainWindow):
         self.spotify_tracks_by_playlist: Dict[str, List[SpotifyTrack]] = {}
         self.tidal_tracks_by_playlist: Dict[str, List[TidalTrack]] = {}
         self.crossref_selection: List[Tuple[SpotifyTrack, TidalTrack]] = []
+        # Fetch scope: 'spotify', 'tidal', or 'both'
+        self._fetch_scope: str = "both"
 
     def _build_spotify_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.sp_list = QListWidget()
+        self.sp_list.setAlternatingRowColors(True)
+        self.sp_list.setToolTip("Your Spotify playlists. Select one to preview tracks and cross-reference.")
         self.sp_tracks = QTableWidget(0, 4)
-        self.sp_tracks.setHorizontalHeaderLabels(
-            ["Name", "Artist", "Album", "Duration"]
-        )
+        self.sp_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Duration"])
+        self.sp_tracks.setAlternatingRowColors(True)
+        self.sp_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.sp_tracks.horizontalHeader().setStretchLastSection(True)
         splitter.addWidget(self.sp_list)
         splitter.addWidget(self.sp_tracks)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
         layout.addWidget(splitter)
-        self.sp_list.itemSelectionChanged.connect(
-            self._load_spotify_tracks_for_selected
-        )
+        self.sp_list.itemSelectionChanged.connect(self._load_spotify_tracks_for_selected)
         return page
 
     def _build_tidal_tab(self) -> QWidget:
@@ -208,12 +246,17 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.td_list = QListWidget()
+        self.td_list.setAlternatingRowColors(True)
+        self.td_list.setToolTip("Your TIDAL playlists. Select one to preview tracks.")
         self.td_tracks = QTableWidget(0, 5)
-        self.td_tracks.setHorizontalHeaderLabels(
-            ["Name", "Artist", "Album", "Quality", "ID"]
-        )
+        self.td_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Quality", "ID"])
+        self.td_tracks.setAlternatingRowColors(True)
+        self.td_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.td_tracks.horizontalHeader().setStretchLastSection(True)
         splitter.addWidget(self.td_list)
         splitter.addWidget(self.td_tracks)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
         layout.addWidget(splitter)
         self.td_list.itemSelectionChanged.connect(self._load_tidal_tracks_for_selected)
         return page
@@ -292,44 +335,63 @@ class MainWindow(QMainWindow):
             self.status_label.setText("TIDAL login cancelled")
 
     def _fetch_all(self):
-        self.logger.info("Fetching playlists for Spotify and TIDAL")
+        scope = getattr(self, "_fetch_scope", "both")
+        self.logger.info(f"Refreshing playlists (scope={scope})")
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        if scope == "spotify":
+            self.status_label.setText("Refreshing Spotify playlists...")
+        elif scope == "tidal":
+            self.status_label.setText("Refreshing TIDAL playlists...")
+        else:
+            self.status_label.setText("Refreshing Spotify and TIDAL playlists...")
 
-        def sp_fetch(progress_callback=None):
-            return self.spotify.get_user_playlists(progress_callback=progress_callback)
+        sp_weight = 50 if scope in ("both", "spotify") else 0
+        td_weight = 50 if scope in ("both", "tidal") else 0
 
-        def sp_done(pls):
-            self.spotify_playlists = pls
-            self.sp_list.clear()
-            for pl in pls:
-                name = (
-                    pl.get("name") if isinstance(pl, dict) else getattr(pl, "name", "")
-                )
-                pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
-                self.sp_list.addItem(f"{name} ({pid})")
-            self.progress.setValue(40)
+        # Spotify fetch
+        if sp_weight:
+            def sp_fetch(progress_callback=None):
+                return self.spotify.get_user_playlists(progress_callback=progress_callback)
 
-        def sp_progress(p):
-            self.progress.setValue(int(p * 0.4))
+            def sp_done(pls):
+                self.spotify_playlists = pls
+                self.sp_list.clear()
+                for pl in pls:
+                    name = pl.get("name") if isinstance(pl, dict) else getattr(pl, "name", "")
+                    pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
+                    self.sp_list.addItem(f"{name} ({pid})")
+                if scope == "spotify":
+                    self.progress.setValue(100)
+                else:
+                    self.progress.setValue(sp_weight)
 
-        run_in_background(self.pool, sp_fetch, sp_done, on_progress=sp_progress)
+            def sp_progress(p):
+                self.progress.setValue(int(p * (sp_weight)))
 
-        def td_fetch(progress_callback=None):
-            return self.tidal.get_user_playlists(progress_callback=progress_callback)
+            run_in_background(self.pool, sp_fetch, sp_done, on_progress=sp_progress)
 
-        def td_done(tpls):
-            self.tidal_playlists = tpls
-            self.td_list.clear()
-            for pl in tpls:
-                name = getattr(pl, "name", "")
-                pid = getattr(pl, "id", "")
-                self.td_list.addItem(f"{name} ({pid})")
-            self.progress.setValue(80)
+        # TIDAL fetch
+        if td_weight:
+            def td_fetch(progress_callback=None):
+                return self.tidal.get_user_playlists(progress_callback=progress_callback)
 
-        def td_progress(p):
-            self.progress.setValue(40 + int(p * 0.4))
+            def td_done(tpls):
+                self.tidal_playlists = tpls
+                self.td_list.clear()
+                for pl in tpls:
+                    name = getattr(pl, "name", "")
+                    pid = getattr(pl, "id", "")
+                    self.td_list.addItem(f"{name} ({pid})")
+                if scope == "tidal":
+                    self.progress.setValue(100)
+                else:
+                    self.progress.setValue(sp_weight + td_weight)
 
-        run_in_background(self.pool, td_fetch, td_done, on_progress=td_progress)
+            def td_progress(p):
+                self.progress.setValue(sp_weight + int(p * (td_weight)))
+
+            run_in_background(self.pool, td_fetch, td_done, on_progress=td_progress)
 
     def _load_spotify_tracks_for_selected(self):
         self.logger.debug("Loading Spotify tracks for selected playlist")
