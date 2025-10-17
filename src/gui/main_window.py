@@ -91,6 +91,13 @@ class MainWindow(QMainWindow):
         transfer_bar.addStretch(1)
         root.addLayout(transfer_bar)
 
+        # Cross-reference results table
+        self.xref_table = QTableWidget(0, 4)
+        self.xref_table.setHorizontalHeaderLabels([
+            "Spotify", "Match (TIDAL)", "Quality", "Status"
+        ])
+        root.addWidget(self.xref_table)
+
         self.setCentralWidget(container)
 
         # Signals
@@ -297,9 +304,21 @@ class MainWindow(QMainWindow):
 
     def _cross_reference(self):
         self.logger.info("Starting cross-reference")
+        self.status_label.setText("Cross-referencing...")
+        # indeterminate progress until first update
+        self.progress.setRange(0, 0)
+        # disable buttons while running
+        self.btn_crossref.setEnabled(False)
+        self.btn_transfer.setEnabled(False)
+        self.btn_fetch.setEnabled(False)
         row = self.sp_list.currentRow()
         if row < 0:
             self.status_label.setText("Select a Spotify playlist first")
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.btn_crossref.setEnabled(True)
+            self.btn_transfer.setEnabled(True)
+            self.btn_fetch.setEnabled(True)
             return
         pl = self.spotify_playlists[row]
         pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
@@ -310,9 +329,11 @@ class MainWindow(QMainWindow):
                 tr = self.spotify.get_playlist_tracks(pid, progress_callback=None)
             return tr
 
-        def work():
+        def work(progress_callback=None):
             tracks = ensure_tracks()
             matches: List[Tuple[SpotifyTrack, TidalTrack]] = []
+            total = len(tracks)
+            done_count = 0
             for item in tracks:
                 sp = SpotifyTrack.from_api(item) if isinstance(item, dict) else item
                 isrc = (sp.external_ids or {}).get("isrc") if sp.external_ids else None
@@ -320,15 +341,53 @@ class MainWindow(QMainWindow):
                     isrc=isrc, name=sp.name, artist=sp.artists_names
                 )
                 matches.append((sp, best))
+                done_count += 1
+                if progress_callback and total:
+                    progress_callback(int(done_count / total * 100))
             return matches
+
+        def on_progress(p):
+            if self.progress.maximum() == 0:
+                self.progress.setRange(0, 100)
+            self.progress.setValue(p)
 
         def done(matches):
             self.crossref_selection = matches
-            self.status_label.setText(
-                f"Matched {sum(1 for _, b in matches if b)} / {len(matches)}"
-            )
+            matched = sum(1 for _, b in matches if b)
+            self.status_label.setText(f"Matched {matched} / {len(matches)}")
+            # populate table
+            self.xref_table.setRowCount(0)
+            for sp, td in matches:
+                row_idx = self.xref_table.rowCount()
+                self.xref_table.insertRow(row_idx)
+                self.xref_table.setItem(row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp.artists_names}"))
+                if td:
+                    name = getattr(td, "name", "") or getattr(td, "full_name", "")
+                    artist = ", ".join(getattr(a, "name", "") for a in (getattr(td, "artists", []) or []))
+                    qual = Tidal.quality_label(td)
+                    self.xref_table.setItem(row_idx, 1, QTableWidgetItem(f"{name} — {artist}"))
+                    self.xref_table.setItem(row_idx, 2, QTableWidgetItem(qual))
+                    self.xref_table.setItem(row_idx, 3, QTableWidgetItem("OK"))
+                else:
+                    self.xref_table.setItem(row_idx, 1, QTableWidgetItem("No match"))
+                    self.xref_table.setItem(row_idx, 2, QTableWidgetItem("-"))
+                    self.xref_table.setItem(row_idx, 3, QTableWidgetItem("Missing"))
+            # re-enable
+            self.btn_crossref.setEnabled(True)
+            self.btn_transfer.setEnabled(True)
+            self.btn_fetch.setEnabled(True)
+            self.progress.setRange(0, 100)
+            self.progress.setValue(100)
 
-        run_in_background(self.pool, work, done)
+        def on_error(e):
+            self.status_label.setText(f"Cross-reference failed: {e}")
+            self.btn_crossref.setEnabled(True)
+            self.btn_transfer.setEnabled(True)
+            self.btn_fetch.setEnabled(True)
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+
+        run_in_background(self.pool, work, done, on_error=on_error, on_progress=on_progress)
 
     def _transfer(self):
         self.logger.info("Starting transfer to TIDAL")
