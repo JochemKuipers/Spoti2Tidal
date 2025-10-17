@@ -21,7 +21,10 @@ class RunnableTask(QRunnable):
         # Provide a progress callback only if the function supports it
         try:
             sig = inspect.signature(fn)
-            if "progress_callback" in sig.parameters and "progress_callback" not in self.kwargs:
+            if (
+                "progress_callback" in sig.parameters
+                and "progress_callback" not in self.kwargs
+            ):
                 self.kwargs["progress_callback"] = self.signals.progress.emit
         except Exception:
             # If inspection fails, do not inject progress callback

@@ -93,9 +93,9 @@ class MainWindow(QMainWindow):
 
         # Cross-reference results table
         self.xref_table = QTableWidget(0, 4)
-        self.xref_table.setHorizontalHeaderLabels([
-            "Spotify", "Match (TIDAL)", "Quality", "Status"
-        ])
+        self.xref_table.setHorizontalHeaderLabels(
+            ["Spotify", "Match (TIDAL)", "Quality", "Status"]
+        )
         root.addWidget(self.xref_table)
 
         self.setCentralWidget(container)
@@ -338,7 +338,10 @@ class MainWindow(QMainWindow):
                 sp = SpotifyTrack.from_api(item) if isinstance(item, dict) else item
                 isrc = (sp.external_ids or {}).get("isrc") if sp.external_ids else None
                 best = self.tidal.resolve_best_match(
-                    isrc=isrc, name=sp.name, artist=sp.artists_names
+                    isrc=isrc,
+                    name=sp.name,
+                    artist=sp.artists_names,
+                    duration_ms=sp.duration_ms,
                 )
                 matches.append((sp, best))
                 done_count += 1
@@ -360,12 +363,19 @@ class MainWindow(QMainWindow):
             for sp, td in matches:
                 row_idx = self.xref_table.rowCount()
                 self.xref_table.insertRow(row_idx)
-                self.xref_table.setItem(row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp.artists_names}"))
+                self.xref_table.setItem(
+                    row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp.artists_names}")
+                )
                 if td:
                     name = getattr(td, "name", "") or getattr(td, "full_name", "")
-                    artist = ", ".join(getattr(a, "name", "") for a in (getattr(td, "artists", []) or []))
+                    artist = ", ".join(
+                        getattr(a, "name", "")
+                        for a in (getattr(td, "artists", []) or [])
+                    )
                     qual = Tidal.quality_label(td)
-                    self.xref_table.setItem(row_idx, 1, QTableWidgetItem(f"{name} — {artist}"))
+                    self.xref_table.setItem(
+                        row_idx, 1, QTableWidgetItem(f"{name} — {artist}")
+                    )
                     self.xref_table.setItem(row_idx, 2, QTableWidgetItem(qual))
                     self.xref_table.setItem(row_idx, 3, QTableWidgetItem("OK"))
                 else:
@@ -387,7 +397,9 @@ class MainWindow(QMainWindow):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
 
-        run_in_background(self.pool, work, done, on_error=on_error, on_progress=on_progress)
+        run_in_background(
+            self.pool, work, done, on_error=on_error, on_progress=on_progress
+        )
 
     def _transfer(self):
         self.logger.info("Starting transfer to TIDAL")
