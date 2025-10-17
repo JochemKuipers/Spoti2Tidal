@@ -144,8 +144,7 @@ class Spotify:
         self, playlist_id, max_workers=5, progress_callback=None
     ) -> List[SpotifyTrack]:
         self.logger.info(f"Fetching Spotify tracks for playlist {playlist_id}")
-        tracks = []
-        response = self.sp.playlist_tracks(playlist_id)
+        response = self.sp.playlist_items(playlist_id)
         total = response["total"]
 
         batch_size = 50
@@ -154,10 +153,10 @@ class Spotify:
 
         def fetch_batch(offset):
             try:
-                response = self.sp.playlist_tracks(
+                res = self.sp.playlist_items(
                     playlist_id, limit=50, offset=offset, market=self.market
                 )
-                return offset, response["items"], None
+                return offset, res["items"], None
             except Exception as e:
                 self.logger.exception("Failed to fetch Spotify playlist batch")
                 return offset, [], str(e)
@@ -192,7 +191,6 @@ class Spotify:
         self, max_workers=5, progress_callback=None
     ) -> List[SpotifyTrack]:
         self.logger.info("Fetching Spotify saved tracks")
-        tracks = []
         response = self.sp.current_user_saved_tracks(
             limit=50, offset=0, market=self.market
         )

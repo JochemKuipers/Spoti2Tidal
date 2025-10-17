@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QTextEdit,
+    QLineEdit,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThreadPool
 import logging
@@ -26,6 +28,76 @@ from src.models.spotify import SpotifyTrack, SpotifyPlaylist
 from tidalapi.media import Track as TidalTrack
 from tidalapi.playlist import UserPlaylist as TidalPlaylist
 from src.gui.workers import run_in_background
+
+
+class TidalLoginDialog(QDialog):
+    def __init__(self, parent: QWidget | None, login_url: str):
+        super().__init__(parent)
+        self.setWindowTitle("TIDAL Login")
+        self.setMinimumWidth(600)
+        self.redirect_url = None
+
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instructions = QLabel(
+            "1. Click 'Open Browser' to log in to TIDAL\n"
+            "2. After logging in, you'll see an 'Oops' page\n"
+            "3. Copy the FULL URL from that page\n"
+            "4. Paste it below and click 'Complete Login'"
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Browser button
+        self.browser_btn = QPushButton("Open Browser for Login")
+        self.browser_btn.clicked.connect(lambda: self._open_browser(login_url))
+        layout.addWidget(self.browser_btn)
+
+        # URL input
+        url_label = QLabel("Paste the redirect URL here:")
+        layout.addWidget(url_label)
+
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://tidal.com/android/login/auth?code=...")
+        layout.addWidget(self.url_input)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _open_browser(self, url: str):
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+            self.browser_btn.setText("Browser Opened - Complete Login There")
+            self.browser_btn.setEnabled(False)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open browser: {e}")
+
+    def _validate_and_accept(self):
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Error", "Please paste the redirect URL")
+            return
+        if "code=" not in url:
+            QMessageBox.warning(
+                self,
+                "Invalid URL",
+                "The URL doesn't appear to contain an authorization code.\n"
+                "Make sure you copied the full URL from the redirect page.",
+            )
+            return
+        self.redirect_url = url
+        self.accept()
+
+    def get_redirect_url(self) -> str | None:
+        return self.redirect_url
 
 
 class ConfirmDialog(QDialog):
@@ -169,25 +241,55 @@ class MainWindow(QMainWindow):
     def _connect_tidal(self):
         self.logger.info("Connect TIDAL clicked")
 
-        def work():
-            if not self.tidal.ensure_logged_in():
-                self.tidal.open_browser_login()
-                return None
-            return self.tidal.get_user()
+        # First check if already logged in
+        if self.tidal.is_logged_in():
+            user = self.tidal.get_user()
+            name = getattr(user, "name", "OK") if user else "OK"
+            self.status_label.setText(f"TIDAL: {name}")
+            return
 
-        def done(user):
-            if user is None:
-                self.status_label.setText("Complete TIDAL login in browser...")
-            else:
-                name = getattr(user, "name", "OK") if user else "OK"
-                self.status_label.setText(f"TIDAL: {name}")
+        # Try to refresh token if available
+        if self.tidal.ensure_logged_in():
+            user = self.tidal.get_user()
+            name = getattr(user, "name", "OK") if user else "OK"
+            self.status_label.setText(f"TIDAL: {name}")
+            return
 
-        run_in_background(
-            self.pool,
-            work,
-            done,
-            on_error=lambda e: self.status_label.setText(f"TIDAL login failed: {e}"),
-        )
+        # Need to do PKCE login
+        login_url = self.tidal.get_pkce_login_url()
+        dialog = TidalLoginDialog(self, login_url)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            redirect_url = dialog.get_redirect_url()
+            if redirect_url:
+                try:
+                    # Complete the login in a background thread
+                    def work():
+                        success = self.tidal.complete_pkce_login(redirect_url)
+                        if success:
+                            return self.tidal.get_user()
+                        return None
+
+                    def done(user):
+                        if user:
+                            name = getattr(user, "name", "OK") if user else "OK"
+                            self.status_label.setText(f"TIDAL: {name}")
+                            QMessageBox.information(self, "Success", "Successfully logged in to TIDAL!")
+                        else:
+                            self.status_label.setText("TIDAL login failed")
+                            QMessageBox.warning(self, "Error", "Failed to complete TIDAL login")
+
+                    def on_error(e):
+                        self.status_label.setText(f"TIDAL login failed: {e}")
+                        QMessageBox.warning(self, "Error", f"TIDAL login failed: {e}")
+
+                    run_in_background(self.pool, work, done, on_error=on_error)
+                except Exception as e:
+                    self.logger.exception("TIDAL login failed")
+                    self.status_label.setText(f"TIDAL login failed: {e}")
+                    QMessageBox.warning(self, "Error", f"TIDAL login failed: {e}")
+        else:
+            self.status_label.setText("TIDAL login cancelled")
 
     def _fetch_all(self):
         self.logger.info("Fetching playlists for Spotify and TIDAL")

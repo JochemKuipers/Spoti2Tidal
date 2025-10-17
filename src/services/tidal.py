@@ -136,7 +136,7 @@ class Tidal:
         return self.session.user
 
     def get_user_playlists(
-        self, progress_callback=None, page_limit: int = 50
+        self, progress_callback=None
     ) -> List[tidalapi.playlist.UserPlaylist]:
         self.logger.info("Fetching TIDAL user playlists")
         try:
@@ -220,7 +220,6 @@ class Tidal:
                 query=query, models=[tidalapi.media.Track], limit=limit
             )
             # Handle possible shapes: list, dict with 'tracks', or object with .tracks
-            tracks = []
             if isinstance(results, list):
                 tracks = results
             elif isinstance(results, dict) and "tracks" in results:
@@ -359,7 +358,7 @@ class Tidal:
             # Strip everything from the first bracket onwards
             t = t[: bracket_match.start()]
 
-        # Remove anything after a dash (if it says remaster, remix etc, also move that to tail)
+        # Remove anything after a dash (if it says remaster, remix etc. , also move that to tail)
         dash_match = re.search(
             r"-\s*(remaster(ed)?(\s*\d{2,4})?|remix|edit|version)\b.*$", t
         )
@@ -375,11 +374,10 @@ class Tidal:
         t = re.sub(r"(?<=\w)\.(?=\w)", "", t)
 
         # Preserve word continuity by removing apostrophes between alphanumerics (e.g., emperor's -> emperors)
-        t = re.sub(r"(?<=\w)['’](?=\w)", "", t)
+        t = re.sub(r"(?<=\w)[''](?=\w)", "", t)
 
-        # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
-        t = re.sub(r"[^a-z0-9]+", " ", t)
-
+        # Preserve word continuity by removing underscores between alphanumerics (e.g., WorldHeal_124 -> worldheal124)
+        t = re.sub(r"(?<=\w)_(?=\w)", "", t)
 
         # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
         t = re.sub(r"[^a-z0-9]+", " ", t)
@@ -547,12 +545,12 @@ class Tidal:
     ) -> Optional[tidalapi.playlist.UserPlaylist]:
         self.logger.info(f"Creating TIDAL playlist: {name}")
         try:
-            return self.session.user.create_playlist(name=name, description=description)
-        except Exception:
-            self.logger.exception("Failed to create TIDAL playlist")
+            return self.session.user.create_playlist(title=name, description=description)
+        except Exception as e:
+            self.logger.exception(f"Failed to create TIDAL playlist {name}: {e}")
             return None
 
-    def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[int]) -> bool:
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         self.logger.info(
             f"Adding {len(track_ids)} tracks to TIDAL playlist {playlist_id}"
         )
@@ -566,8 +564,8 @@ class Tidal:
                 batch = track_ids[i : i + batch_size]
                 playlist.add(batch)
             return True
-        except Exception:
-            self.logger.exception("Failed to add tracks to TIDAL playlist")
+        except Exception as e:
+            self.logger.exception(f"Failed to add tracks to TIDAL playlist: {e}")
             return False
 
     def get_playlist_track_ids(self, playlist_id: str) -> List[int]:
@@ -577,6 +575,6 @@ class Tidal:
         try:
             tracks = self.get_playlist_tracks(playlist_id)
             return [int(getattr(t, "id", -1)) for t in tracks if getattr(t, "id", None)]
-        except Exception:
-            self.logger.exception("Failed to fetch TIDAL playlist tracks")
+        except Exception as e:
+            self.logger.exception(f"Failed to fetch TIDAL playlist tracks: {e}")
             return []
