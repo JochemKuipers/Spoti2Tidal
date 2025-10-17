@@ -1,15 +1,16 @@
-from services.tidal import Tidal
+from __future__ import annotations
+import sys
+from PyQt6.QtWidgets import QApplication
+from gui.main_window import MainWindow
+from logging_config import setup_logging
 
 
 def main():
-    tidal = Tidal()
-
-    # Fetch the first 10 liked tracks from Spotify
-    results = tidal.get_user_playlists()
-    playlist = results[0]
-
-    print(playlist.name)
-    print(playlist.get_tracks_count())
+    setup_logging()
+    app = QApplication(sys.argv)
+    w = MainWindow()
+    w.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

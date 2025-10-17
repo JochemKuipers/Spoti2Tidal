@@ -1,0 +1,58 @@
+from __future__ import annotations
+from typing import Callable, Any
+from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
+import logging
+import inspect
+
+
+class WorkerSignals(QObject):
+    finished = pyqtSignal(object)
+    error = pyqtSignal(Exception)
+    progress = pyqtSignal(int)
+
+
+class RunnableTask(QRunnable):
+    def __init__(self, fn: Callable[..., Any], *args, **kwargs):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+        # Provide a progress callback only if the function supports it
+        try:
+            sig = inspect.signature(fn)
+            if "progress_callback" in sig.parameters and "progress_callback" not in self.kwargs:
+                self.kwargs["progress_callback"] = self.signals.progress.emit
+        except Exception:
+            # If inspection fails, do not inject progress callback
+            pass
+
+    def run(self):
+        try:
+            logging.getLogger(__name__).debug(
+                f"Starting background task {self.fn.__name__}"
+            )
+            result = self.fn(*self.args, **self.kwargs)
+            self.signals.finished.emit(result)
+        except Exception as e:
+            logging.getLogger(__name__).exception("Background task failed")
+            self.signals.error.emit(e)
+
+
+def run_in_background(
+    pool: QThreadPool,
+    fn: Callable[..., Any],
+    on_done: Callable[[Any], None],
+    on_error: Callable[[Exception], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    *args,
+    **kwargs,
+):
+    task = RunnableTask(fn, *args, **kwargs)
+    if on_done:
+        task.signals.finished.connect(on_done)
+    if on_error:
+        task.signals.error.connect(on_error)
+    if on_progress:
+        task.signals.progress.connect(on_progress)
+    pool.start(task)

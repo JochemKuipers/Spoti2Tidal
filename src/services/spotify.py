@@ -9,6 +9,7 @@ from platformdirs import user_config_dir
 import os
 from dotenv import load_dotenv
 from typing import Any, List
+import logging
 from models.spotify import SpotifyPlaylist, SpotifyTrack
 
 load_dotenv()
@@ -70,6 +71,7 @@ class PlaylistTrackFetchWorker(QThread):
 
 class Spotify:
     def __init__(self):
+        self.logger = logging.getLogger(__name__)
         self.client_id = os.getenv("SPOTIPY_CLIENT_ID")
         self.client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
         self.scope = [
@@ -91,6 +93,7 @@ class Spotify:
         return self.sp
 
     def get_user(self) -> Any | None:
+        self.logger.debug("Fetching Spotify current user")
         user = self.sp.current_user()
         # Update market based on user's country
         if user and "country" in user:
@@ -98,6 +101,7 @@ class Spotify:
         return user
 
     def get_user_playlists(self, progress_callback=None) -> List[SpotifyPlaylist]:
+        self.logger.info("Fetching Spotify user playlists")
         playlists = []
         response = self.sp.current_user_playlists()
         total = response.get("total", 0) or 0
@@ -139,6 +143,7 @@ class Spotify:
     def get_playlist_tracks(
         self, playlist_id, max_workers=5, progress_callback=None
     ) -> List[SpotifyTrack]:
+        self.logger.info(f"Fetching Spotify tracks for playlist {playlist_id}")
         tracks = []
         response = self.sp.playlist_tracks(playlist_id)
         total = response["total"]
@@ -154,6 +159,7 @@ class Spotify:
                 )
                 return offset, response["items"], None
             except Exception as e:
+                self.logger.exception("Failed to fetch Spotify playlist batch")
                 return offset, [], str(e)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -185,6 +191,7 @@ class Spotify:
     def get_user_tracks(
         self, max_workers=5, progress_callback=None
     ) -> List[SpotifyTrack]:
+        self.logger.info("Fetching Spotify saved tracks")
         tracks = []
         response = self.sp.current_user_saved_tracks(
             limit=50, offset=0, market=self.market
@@ -202,6 +209,7 @@ class Spotify:
                 )
                 return offset, response["items"], None
             except Exception as e:
+                self.logger.exception("Failed to fetch Spotify saved tracks batch")
                 return offset, [], str(e)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
