@@ -1,0 +1,7 @@
+spotipy
+tidalapi
+redis
+requests
+PyQt6
+platformdirs
+python-dotenv
