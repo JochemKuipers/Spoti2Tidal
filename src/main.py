@@ -1,8 +1,8 @@
 from __future__ import annotations
 import sys
 from PyQt6.QtWidgets import QApplication
-from gui.main_window import MainWindow
-from logging_config import setup_logging
+from src.gui.main_window import MainWindow
+from src.logging_config import setup_logging
 
 
 def main():

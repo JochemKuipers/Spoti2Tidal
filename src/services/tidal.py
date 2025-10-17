@@ -402,6 +402,7 @@ class Tidal:
         name: str,
         artist: Optional[str],
         duration_ms: Optional[int] = None,
+        album: Optional[str] = None,
     ) -> Optional[tidalapi.media.Track]:
         self.logger.info(
             f"Resolving best match for ISRC: {isrc}, name: {name}, artist: {artist}"
@@ -409,10 +410,36 @@ class Tidal:
         candidates: List[tidalapi.media.Track] = []
         if isrc:
             candidates = self.search_by_isrc(isrc)
-        if not candidates:
-            candidates = self.search_by_name(name)
+        # Always include name-based candidates
+        name_candidates: List[tidalapi.media.Track] = self.search_by_name(name)
+        if name_candidates:
+            candidates.extend(name_candidates)
+        # Always include name+artist candidates when artist is available
+        if artist:
+            name_artist_candidates = self.search_by_name_artist(name, artist)
+            if name_artist_candidates:
+                candidates.extend(name_artist_candidates)
+        # Additional fallbacks: try each individual artist with the title
         if not candidates and artist:
-            candidates = self.search_by_name_artist(name, artist)
+            for part in [a.strip() for a in (artist or "").split(",") if a.strip()]:
+                more = self.search_by_name_artist(name, part)
+                if more:
+                    candidates.extend(more)
+        # Try including album keyword to disambiguate
+        if not candidates and album:
+            more = self._search_tracks(f"{name} {album}", limit=25)
+            if more:
+                candidates.extend(more)
+        # de-duplicate by id
+        seen = set()
+        uniq = []
+        for c in candidates:
+            cid = getattr(c, "id", None)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            uniq.append(c)
+        candidates = uniq
 
         if not candidates:
             self.logger.info("No candidates found")
@@ -429,18 +456,33 @@ class Tidal:
             c_name = getattr(c, "name", "") or getattr(c, "full_name", "")
             score = 0
             score += self._title_score(name, c_name)
-            score += self._artist_score(artist or "", getattr(c, "artists", []))
+            a_score = self._artist_score(artist or "", getattr(c, "artists", []))
+            score += a_score
             score += self._duration_score(duration_ms, getattr(c, "duration", None))
             score += {3: 5, 2: 3, 1: 0}.get(self._quality_rank(c), 0)
 
-            if score < 0:
+            # Hard reject only if artist clearly mismatches
+            if a_score < -30:
                 continue
             if score > best_score:
                 best_score = score
                 best_track = c
 
-        if best_score < 30:
-            self.logger.info(f"Best score {best_score} below threshold; no match")
+        if best_track is None:
+            self.logger.info("No viable scored candidates")
+            return None
+        # Adaptive threshold: if exact normalized title and duration is close, allow lower
+        exact_title = self._normalize_text(name) == self._normalize_text(
+            getattr(best_track, "name", "") or getattr(best_track, "full_name", "")
+        )
+        duration_close = self._duration_score(
+            duration_ms, getattr(best_track, "duration", None)
+        ) >= 20
+        threshold = 30
+        if exact_title and duration_close:
+            threshold = 15
+        if best_score < threshold:
+            self.logger.info(f"Best score {best_score} below threshold {threshold}; no match")
             return None
 
         self.logger.info(f"Best match score {best_score}: {best_track}")

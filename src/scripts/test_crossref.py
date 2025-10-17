@@ -3,9 +3,9 @@ import logging
 import sys
 from urllib.parse import urlparse
 
-from services.spotify import Spotify
-from services.tidal import Tidal
-from logging_config import setup_logging
+from src.services.spotify import Spotify
+from src.services.tidal import Tidal
+from src.logging_config import setup_logging
 
 
 SPOTIFY_TRACK_URL = (

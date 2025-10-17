@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 from typing import Any, List
 import logging
-from models.spotify import SpotifyPlaylist, SpotifyTrack
+from src.models.spotify import SpotifyPlaylist, SpotifyTrack
 
 load_dotenv()
 

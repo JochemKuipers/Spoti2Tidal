@@ -20,12 +20,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThreadPool
 import logging
 
-from services.spotify import Spotify
-from services.tidal import Tidal
-from models.spotify import SpotifyTrack, SpotifyPlaylist
+from src.services.spotify import Spotify
+from src.services.tidal import Tidal
+from src.models.spotify import SpotifyTrack, SpotifyPlaylist
 from tidalapi.media import Track as TidalTrack
 from tidalapi.playlist import UserPlaylist as TidalPlaylist
-from gui.workers import run_in_background
+from src.gui.workers import run_in_background
 
 
 class ConfirmDialog(QDialog):
