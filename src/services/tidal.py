@@ -6,10 +6,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from typing import List, Optional
 import logging
 import re
-import sqlite3
-import threading
-import time
-from collections import OrderedDict
 
 DEFAULT_SESSION_DIR = Path(user_config_dir("Spoti2Tidal"))
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "tidal_session.json"
@@ -67,106 +63,8 @@ class Tidal:
         self.session_file = Path(session_file) if session_file else DEFAULT_SESSION_FILE
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # --- simple rate limiter & concurrency gate ---
-        # Limit concurrent TIDAL calls and add minimal spacing between calls to avoid throttling
-        self._rate_semaphore = threading.Semaphore(3)
-        self._last_call_ts = 0.0
-        self._min_call_interval_sec = 0.05
-
-        # --- metrics counters ---
-        self.metrics = {
-            "search": 0,
-            "playlist_tracks": 0,
-            "favorites_tracks": 0,
-            "playlist_add": 0,
-            "playlist_get": 0,
-            "track_get": 0,
-        }
-
-        # --- in-process LRU cache for search queries ---
-        self._search_cache: OrderedDict[tuple, List[tidalapi.media.Track]] = OrderedDict()
-        self._search_cache_capacity = 512
-
-        # --- persistent cache for match resolutions ---
-        self._cache_path = self.session_file.parent / "tidal_match_cache.sqlite"
-        try:
-            self._init_sqlite_cache()
-        except Exception:
-            self.logger.exception("Failed to initialize persistent TIDAL cache")
-
         # Try to load an existing session; if invalid, stay unauthenticated until user completes PKCE
         self._load_session_silent()
-
-    # ---- internal helpers ----
-    def _throttled_call(self, fn, *args, **kwargs):
-        with self._rate_semaphore:
-            # ensure minimal spacing between calls across threads
-            now = time.time()
-            sleep_for = self._min_call_interval_sec - (now - self._last_call_ts)
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-            try:
-                return fn(*args, **kwargs)
-            finally:
-                self._last_call_ts = time.time()
-
-    def _init_sqlite_cache(self):
-        conn = sqlite3.connect(self._cache_path)
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS matches (
-                    key TEXT PRIMARY KEY,
-                    tidal_track_id INTEGER,
-                    updated_at INTEGER
-                )
-                """
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def _cache_key(self, *, isrc: Optional[str], name: str, artists: Optional[list | str], duration_ms: Optional[int], album: Optional[str]) -> str:
-        # Build a stable normalized key independent of field ordering
-        norm_name = self._normalize_text(name)
-        if isinstance(artists, list):
-            try:
-                artist_names = [a if isinstance(a, str) else a.get("name", "") for a in artists]
-            except Exception:
-                artist_names = []
-        else:
-            artist_names = [artists or ""]
-        norm_artists = ",".join(sorted(self._normalize_text(a) for a in artist_names if a))
-        norm_album = self._normalize_text(album or "")
-        isrc_part = (isrc or "").strip().upper()
-        dur_part = str(int(duration_ms) if duration_ms else 0)
-        return "|".join([isrc_part, norm_name, norm_artists, norm_album, dur_part])
-
-    def _cache_get(self, key: str) -> Optional[int]:
-        try:
-            conn = sqlite3.connect(self._cache_path)
-            try:
-                cur = conn.execute("SELECT tidal_track_id FROM matches WHERE key = ?", (key,))
-                row = cur.fetchone()
-                return int(row[0]) if row else None
-            finally:
-                conn.close()
-        except Exception:
-            return None
-
-    def _cache_set(self, key: str, tidal_track_id: int) -> None:
-        try:
-            conn = sqlite3.connect(self._cache_path)
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO matches(key, tidal_track_id, updated_at) VALUES(?, ?, ?)",
-                    (key, int(tidal_track_id), int(time.time())),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            pass
 
     def _load_session_silent(self) -> bool:
         try:
@@ -242,9 +140,7 @@ class Tidal:
     ) -> List[tidalapi.playlist.UserPlaylist]:
         self.logger.info("Fetching TIDAL user playlists")
         try:
-            # Single call; SDK may internally paginate. Count as playlist_get
-            self.metrics["playlist_get"] += 1
-            playlists = self._throttled_call(self.session.user.playlists)
+            playlists = self.session.user.playlists()
         except Exception:
             playlists = []
         if progress_callback:
@@ -256,17 +152,15 @@ class Tidal:
     ) -> List[tidalapi.media.Track]:
         self.logger.info("Fetching TIDAL user tracks")
         tracks = []
-        total = 0
         try:
-            # Optional count; skip failure without blocking the main loop
-            total = self._throttled_call(self.session.user.favorites.get_tracks_count)
+            total = self.session.user.favorites.get_tracks_count()
         except Exception:
+            self.logger.exception("Failed to fetch TIDAL user favorites count")
             total = 0
 
         offset = 0
         while True:
-            self.metrics["favorites_tracks"] += 1
-            page = self._throttled_call(self.session.user.favorites.tracks, limit=page_limit, offset=offset)
+            page = self.session.user.favorites.tracks(limit=page_limit, offset=offset)
             if not page:
                 break
             tracks.extend(page)
@@ -283,14 +177,13 @@ class Tidal:
 
     def get_playlist(self, playlist_id) -> tidalapi.playlist.UserPlaylist:
         self.logger.info(f"Fetching TIDAL playlist {playlist_id}")
-        self.metrics["playlist_get"] += 1
-        return self._throttled_call(self.session.playlist, playlist_id)
+        return self.session.playlist(playlist_id)
 
     def get_playlist_tracks(
         self, playlist_id, progress_callback=None, page_limit: int = 100
     ) -> List[tidalapi.media.Track]:
         self.logger.info(f"Fetching TIDAL playlist tracks {playlist_id}")
-        playlist = self.get_playlist(playlist_id)
+        playlist = self.session.playlist(playlist_id)
         tracks = []
         try:
             total = playlist.get_tracks_count()
@@ -299,8 +192,7 @@ class Tidal:
 
         offset = 0
         while True:
-            self.metrics["playlist_tracks"] += 1
-            page = self._throttled_call(playlist.tracks, limit=page_limit, offset=offset)
+            page = playlist.tracks(limit=page_limit, offset=offset)
             if not page:
                 break
             tracks.extend(page)
@@ -317,27 +209,15 @@ class Tidal:
 
     def get_track(self, track_id) -> tidalapi.media.Track:
         self.logger.info(f"Fetching TIDAL track {track_id}")
-        self.metrics["track_get"] += 1
-        return self._throttled_call(self.session.track, track_id)
+        return self.session.track(track_id)
 
     # ---- search & matching helpers ----
-    def _search_tracks(self, query: str, limit: int = 10) -> List[tidalapi.media.Track]:
+    def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
         self.logger.info(f"Searching TIDAL for tracks: {query}")
-        # in-process LRU cache to avoid duplicate network calls during a run
-        cache_key = (query, int(limit))
-        if cache_key in self._search_cache:
-            # move to end to mark as recently used
-            results = self._search_cache.pop(cache_key)
-            self._search_cache[cache_key] = results
-            return results
         try:
             # Use the Track class per tidalapi docs for models
-            self.metrics["search"] += 1
-            results = self._throttled_call(
-                self.session.search,
-                query=query,
-                models=[tidalapi.media.Track],
-                limit=limit,
+            results = self.session.search(
+                query=query, models=[tidalapi.media.Track], limit=limit
             )
             # Handle possible shapes: list, dict with 'tracks', or object with .tracks
             tracks = []
@@ -348,10 +228,6 @@ class Tidal:
             else:
                 tracks = getattr(results, "tracks", []) or []
             self.logger.info(f"Found {len(tracks)} TIDAL tracks for search: {query}")
-            # add to LRU
-            self._search_cache[cache_key] = tracks
-            if len(self._search_cache) > self._search_cache_capacity:
-                self._search_cache.popitem(last=False)
             return tracks
         except Exception:
             self.logger.exception("TIDAL search failed")
@@ -385,7 +261,7 @@ class Tidal:
         if not name:
             return []
         if not artists:
-            return self._search_tracks(name, limit=10)
+            return self._search_tracks(name, limit=25)
 
         # Normalize artists to a list of strings
         if isinstance(artists, str):
@@ -399,10 +275,10 @@ class Tidal:
         all_results: List[tidalapi.media.Track] = []
         seen_ids = set()
 
-        # 1. Perform one query for up to the first 2 artists to cap calls
-        for artist_name in artists_list[:2]:
+        # 1. Perform one query for each single artist
+        for artist_name in artists_list:
             sub_query = f"{name} {artist_name}"
-            results = self._search_tracks(sub_query, limit=10)
+            results = self._search_tracks(sub_query, limit=25)
             for t in results:
                 tid = getattr(t, "id", None)
                 if tid in seen_ids:
@@ -410,11 +286,11 @@ class Tidal:
                 seen_ids.add(tid)
                 all_results.append(t)
 
-        # 2. Only perform a combined-artist query if the above yielded no results
-        if not all_results and len(artists_list) > 1:
-            combined_artists = " ".join(artists_list[:3])
+        # 2. Also perform a query with all artists together (if more than one), e.g. "name artist1 artist2 ..."
+        if len(artists_list) > 1:
+            combined_artists = " ".join(artists_list)
             sub_query = f"{name} {combined_artists}"
-            results = self._search_tracks(sub_query, limit=10)
+            results = self._search_tracks(sub_query, limit=25)
             for t in results:
                 tid = getattr(t, "id", None)
                 if tid in seen_ids:
@@ -497,9 +373,6 @@ class Tidal:
 
         # Preserve acronyms by removing dots between alphanumerics (e.g., y.t.t.y -> ytty)
         t = re.sub(r"(?<=\w)\.(?=\w)", "", t)
-
-        # Preserve word continuity by removing apostrophes between alphanumerics (e.g., emperor's -> emperors)
-        t = re.sub(r"(?<=\w)['’](?=\w)", "", t)
 
         # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
         t = re.sub(r"[^a-z0-9]+", " ", t)
@@ -584,61 +457,25 @@ class Tidal:
         self.logger.info(
             f"Resolving best match for ISRC: {isrc}, name: {name}, artists: {artists}"
         )
-        # persistent cache check
-        cache_key = self._cache_key(isrc=isrc, name=name, artists=artists, duration_ms=duration_ms, album=album)
-        cached_id = self._cache_get(cache_key)
-        if cached_id is not None:
-            try:
-                track = self.get_track(cached_id)
-                if track:
-                    return track
-            except Exception:
-                pass
         # Use normalized forms for search queries; keep originals for scoring/display
         search_name = self._normalize_text(name)
         candidates: List[tidalapi.media.Track] = []
-        # Stage 1: ISRC exact match path
         if isrc:
-            isrc_candidates = self.search_by_isrc(isrc)
-            for c in isrc_candidates:
-                if getattr(c, "isrc", None) and c.isrc == isrc:
-                    self.logger.info("Selected by exact ISRC match (short-circuit)")
-                    try:
-                        self._cache_set(cache_key, int(getattr(c, "id", 0)))
-                    except Exception:
-                        pass
-                    return c
-            candidates.extend(isrc_candidates)
-
-        # Stage 2: name-only, smaller limit; evaluate before escalating
+            candidates = self.search_by_isrc(isrc)
+        # Always include name-based candidates
         name_candidates: List[tidalapi.media.Track] = self.search_by_name(search_name)
-        candidates.extend(name_candidates)
-
-        # Quick score on name-only to early-exit if high-confidence
-        def quick_score(c: tidalapi.media.Track) -> int:
-            c_name = getattr(c, "name", "") or getattr(c, "full_name", "")
-            score = 0
-            score += self._title_score(name, c_name)
-            score += self._duration_score(duration_ms, getattr(c, "duration", None))
-            return score
-
-        for c in name_candidates:
-            if quick_score(c) >= 55:
-                try:
-                    self._cache_set(cache_key, int(getattr(c, "id", 0)))
-                except Exception:
-                    pass
-                return c
-
-        # Stage 3: name+artist only if needed
+        if name_candidates:
+            candidates.extend(name_candidates)
+        # Always include name+artist candidates when artist is available
         if artists:
             name_artist_candidates = self.search_by_name_artist(search_name, artists)
-            candidates.extend(name_artist_candidates)
-
-        # Stage 4: include album keyword only if still empty
+            if name_artist_candidates:
+                candidates.extend(name_artist_candidates)
+        # Try including album keyword to disambiguate
         if not candidates and album:
-            more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=10)
-            candidates.extend(more or [])
+            more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
+            if more:
+                candidates.extend(more)
         # de-duplicate by id
         seen = set()
         uniq = []
@@ -695,10 +532,6 @@ class Tidal:
             return None
 
         self.logger.info(f"Best match score {best_score}: {best_track}")
-        try:
-            self._cache_set(cache_key, int(getattr(best_track, "id", 0)))
-        except Exception:
-            pass
         return best_track
 
     # ---- playlist management ----
@@ -724,8 +557,7 @@ class Tidal:
             batch_size = 50
             for i in range(0, len(track_ids), batch_size):
                 batch = track_ids[i : i + batch_size]
-                self.metrics["playlist_add"] += 1
-                self._throttled_call(playlist.add, batch)
+                playlist.add(batch)
             return True
         except Exception:
             self.logger.exception("Failed to add tracks to TIDAL playlist")
