@@ -110,7 +110,7 @@ class TrackItemWidget(QWidget):
             w.setWordWrap(True)
             sp_layout.addWidget(w)
 
-        td_group = QGroupBox("TIDAL match")
+        td_group = QGroupBox("TIDAL")
         td_layout = QVBoxLayout(td_group)
         self.td_label = QLabel("Pending…")
         self.td_label.setWordWrap(True)
@@ -505,8 +505,18 @@ class MainWindow(QMainWindow):
             td_name = getattr(best, "name", "") or getattr(best, "full_name", "")
             td_artists = ", ".join(getattr(a, "name", "") for a in getattr(best, "artists", []) if a)
             td_album = getattr(getattr(best, "album", None), "name", "")
-            q = self.tidal.quality_label(best)
-            label = f"{td_name} — {td_artists}\n{td_album}  •  {q}"
+            # Format like Spotify group: bold title + lines for artists, album, duration
+            try:
+                dur_s = int(getattr(best, "duration", 0) or 0)
+            except Exception:
+                dur_s = 0
+            dur_txt = MainWindow._fmt_duration(dur_s * 1000)
+            label = (
+                f"<b>{td_name}</b><br>"
+                f"{td_artists}<br>"
+                f"{td_album}<br>"
+                f"{dur_txt}"
+            )
             return int(tid) if tid is not None else None, label
 
         def on_done(res: Tuple[Optional[int], Optional[str]]):
