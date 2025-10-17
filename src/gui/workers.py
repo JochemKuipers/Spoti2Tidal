@@ -32,8 +32,21 @@ class RunnableTask(QRunnable):
 
     def run(self):
         try:
+            def _callable_name(c: Callable[..., Any]) -> str:
+                # Try simple function/method name
+                name = getattr(c, "__name__", None)
+                if name:
+                    return name
+                # Support functools.partial
+                func = getattr(c, "func", None)
+                if func is not None:
+                    base = getattr(func, "__name__", func.__class__.__name__)
+                    return f"partial({base})"
+                # Fallback to class name or repr
+                return getattr(c, "__class__", type(c)).__name__
+
             logging.getLogger(__name__).debug(
-                f"Starting background task {self.fn.__name__}"
+                f"Starting background task {_callable_name(self.fn)}"
             )
             result = self.fn(*self.args, **self.kwargs)
             self.signals.finished.emit(result)

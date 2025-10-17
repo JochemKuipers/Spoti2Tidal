@@ -6,6 +6,10 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from typing import List, Optional
 import logging
 import re
+import time
+import os
+import random
+from threading import Semaphore
 
 DEFAULT_SESSION_DIR = Path(user_config_dir("Spoti2Tidal"))
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "tidal_session.json"
@@ -62,6 +66,21 @@ class Tidal:
         self.logger = logger if logger is not print else logging.getLogger(__name__)
         self.session_file = Path(session_file) if session_file else DEFAULT_SESSION_FILE
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Simple rate limiting primitives to avoid HTTP 429
+        try:
+            max_conc = int(os.getenv("TIDAL_MAX_CONCURRENCY", "5"))
+        except Exception:
+            max_conc = 5
+        try:
+            self._per_request_delay = float(os.getenv("TIDAL_REQUEST_DELAY_SEC", "0.15"))
+        except Exception:
+            self._per_request_delay = 0.15
+        try:
+            self._max_retries = int(os.getenv("TIDAL_MAX_RETRIES", "4"))
+        except Exception:
+            self._max_retries = 4
+        self._search_sem = Semaphore(max(1, max_conc))
 
         # Try to load an existing session; if invalid, stay unauthenticated until user completes PKCE
         self._load_session_silent()
@@ -214,23 +233,43 @@ class Tidal:
     # ---- search & matching helpers ----
     def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
         self.logger.info(f"Searching TIDAL for tracks: {query}")
+        # Rate-limited call with retries/backoff
+        def _call():
+            # Gentle pacing between calls to avoid bursts
+            if self._per_request_delay > 0:
+                time.sleep(self._per_request_delay)
+            return self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
+
+        # Acquire concurrency slot
+        self._search_sem.acquire()
         try:
-            # Use the Track class per tidalapi docs for models
-            results = self.session.search(
-                query=query, models=[tidalapi.media.Track], limit=limit
-            )
-            # Handle possible shapes: list, dict with 'tracks', or object with .tracks
-            if isinstance(results, list):
-                tracks = results
-            elif isinstance(results, dict) and "tracks" in results:
-                tracks = results.get("tracks") or []
-            else:
-                tracks = getattr(results, "tracks", []) or []
-            self.logger.info(f"Found {len(tracks)} TIDAL tracks for search: {query}")
-            return tracks
-        except Exception:
-            self.logger.exception("TIDAL search failed")
-            return []
+            delay = 0.5
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    results = _call()
+                    # Normalize shape
+                    if isinstance(results, list):
+                        tracks = results
+                    elif isinstance(results, dict) and "tracks" in results:
+                        tracks = results.get("tracks") or []
+                    else:
+                        tracks = getattr(results, "tracks", []) or []
+                    self.logger.info(f"Found {len(tracks)} TIDAL tracks for search: {query}")
+                    return tracks
+                except Exception as e:
+                    # Heuristic: if it's a 429 or rate-related, back off and retry
+                    msg = str(e).lower()
+                    if "429" in msg or "too many" in msg or "rate" in msg:
+                        self.logger.warning(f"TIDAL rate limited (attempt {attempt}/{self._max_retries}); backing off…")
+                        time.sleep(delay + random.uniform(0, 0.25))
+                        delay = min(8.0, delay * 2)
+                        continue
+                    # Other errors: log and break
+                    self.logger.exception("TIDAL search failed")
+                    break
+        finally:
+            self._search_sem.release()
+        return []
 
     def search_by_isrc(self, isrc: str) -> List[tidalapi.media.Track]:
         self.logger.info(f"Searching TIDAL for tracks by ISRC: {isrc}")
@@ -339,51 +378,18 @@ class Tidal:
     # ---- matching utilities ----
     @staticmethod
     def _normalize_text(text: str) -> str:
-        # Lowercase and setup
-        t = (text or "").lower()
-
-        # Find all bracketed content
-        bracket_match = re.search(r"[\[\(\{](.*?)[\]\)\}]", t)
-        tail = ""
-
-        # Check if the bracketed content contains remix/remaster/edit/version and save if so
-        if bracket_match:
-            content = bracket_match.group(1)
-            # Capture the phrase for tack-on if needed
-            found = re.search(
-                r"(remaster(ed)?(\s*\d{2,4})?|remix|edit|version)", content
-            )
-            if found:
-                tail = " " + found.group(0).strip()
-            # Strip everything from the first bracket onwards
-            t = t[: bracket_match.start()]
-
-        # Remove anything after a dash (if it says remaster, remix etc. , also move that to tail)
-        dash_match = re.search(
-            r"-\s*(remaster(ed)?(\s*\d{2,4})?|remix|edit|version)\b.*$", t
-        )
-        if dash_match:
-            tail = " " + dash_match.group(1).strip()
-            t = t[: dash_match.start()]
-
-        # Remove feat. and with artist callouts
-        t = re.sub(r"[\[(].*?(feat\.?|with\.?).*?[\])]", "", t, flags=re.IGNORECASE)
-        t = re.sub(r"\s*(feat\.|with\.)\s.*$", "", t, flags=re.IGNORECASE)
-
-        # Preserve acronyms by removing dots between alphanumerics (e.g., y.t.t.y -> ytty)
-        t = re.sub(r"(?<=\w)\.(?=\w)", "", t)
-
-        # Preserve word continuity by removing apostrophes between alphanumerics (e.g., emperor's -> emperors)
-        t = re.sub(r"(?<=\w)[''](?=\w)", "", t)
-
-        # Preserve word continuity by removing underscores between alphanumerics (e.g., WorldHeal_124 -> worldheal124)
-        t = re.sub(r"(?<=\w)_(?=\w)", "", t)
-
-        # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
-        t = re.sub(r"[^a-z0-9]+", " ", t)
-        t = re.sub(r"\s+", " ", t).strip()
-        norm = (t + tail).strip()
-        return norm
+        try:
+            # Only strip feat/with patterns, don't remove content in parentheses/brackets unconditionally
+            text = re.sub(
+                r"\s*[\[(]\s*(feat\.?|with\.?)\s.*?[\])]", "", text, flags=re.IGNORECASE
+            ).strip()
+            text = re.sub(
+                r"\s+(feat\.?|with\.?)\s.*$", "", text, flags=re.IGNORECASE
+            ).strip()
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error cleaning name: {e}")
+            raise e
+        return text
 
     @staticmethod
     def _token_set(text: str) -> set:

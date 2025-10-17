@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 from typing import Any, List
 import logging
 from src.models.spotify import SpotifyPlaylist, SpotifyTrack
+import time
+import random
+import os
 
 load_dotenv()
 
@@ -152,14 +155,28 @@ class Spotify:
         results = {}
 
         def fetch_batch(offset):
-            try:
-                res = self.sp.playlist_items(
-                    playlist_id, limit=50, offset=offset, market=self.market
-                )
-                return offset, res["items"], None
-            except Exception as e:
-                self.logger.exception("Failed to fetch Spotify playlist batch")
-                return offset, [], str(e)
+            delay = 0.5
+            max_retries = 4
+            for attempt in range(1, max_retries + 1):
+                try:
+                    # Gentle pacing to reduce burst traffic
+                    time.sleep(0.1)
+                    res = self.sp.playlist_items(
+                        playlist_id, limit=50, offset=offset, market=self.market
+                    )
+                    return offset, res["items"], None
+                except Exception as e:
+                    msg = str(e).lower()
+                    if "429" in msg or "too many" in msg or "rate" in msg:
+                        self.logger.warning(
+                            f"Spotify rate limited on offset {offset} (attempt {attempt}/{max_retries}); backing off…"
+                        )
+                        time.sleep(delay + random.uniform(0, 0.25))
+                        delay = min(8.0, delay * 2)
+                        continue
+                    self.logger.exception("Failed to fetch Spotify playlist batch")
+                    return offset, [], str(e)
+            return offset, [], "rate limited"
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {

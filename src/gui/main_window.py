@@ -1,649 +1,562 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple
+
+import functools
+import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QAbstractItemView,
+    QApplication,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
-    QPushButton,
     QLabel,
     QListWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
-    QSplitter,
-    QProgressBar,
-    QDialog,
-    QDialogButtonBox,
-    QTextEdit,
-    QLineEdit,
+    QListWidgetItem,
+    QMainWindow,
     QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtWidgets import QHeaderView
-from PyQt6.QtCore import Qt, QThreadPool
-import logging
 
+from src.gui.workers import run_in_background
 from src.services.spotify import Spotify
 from src.services.tidal import Tidal
-from src.models.spotify import SpotifyTrack, SpotifyPlaylist
-from tidalapi.media import Track as TidalTrack
-from tidalapi.playlist import UserPlaylist as TidalPlaylist
-from src.gui.workers import run_in_background
 
 
-class TidalLoginDialog(QDialog):
-    def __init__(self, parent: QWidget | None, login_url: str):
+# ---- simple data holders ----
+@dataclass
+class TrackState:
+    index: int
+    sp_item: dict  # Spotify API track item dict
+    widget: QWidget
+    progress_bar: QProgressBar
+    tidal_label: QLabel
+    status_label: QLabel
+    matched_track_id: Optional[int] = None
+    progress: int = 0
+
+
+@dataclass
+class PlaylistState:
+    playlist: dict  # Spotify playlist dict
+    list_item: QListWidgetItem
+    list_widget: QWidget
+    name_label: QLabel
+    progress_bar: QProgressBar
+    container: QWidget  # right panel content container for this playlist
+    tracks_area: QWidget  # child container where track widgets are added
+    tracks_layout: QVBoxLayout
+    tracks: List[TrackState] = field(default_factory=list)
+    started: bool = False
+    completed: bool = False
+    tidal_playlist_id: Optional[str] = None
+
+
+class PlaylistListItem(QWidget):
+    def __init__(self, name: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("TIDAL Login")
-        self.setMinimumWidth(600)
-        self.redirect_url = None
-
         layout = QVBoxLayout(self)
-
-        # Instructions
-        instructions = QLabel(
-            "1. Click 'Open Browser' to log in to TIDAL\n"
-            "2. After logging in, you'll see an 'Oops' page\n"
-            "3. Copy the FULL URL from that page\n"
-            "4. Paste it below and click 'Complete Login'"
-        )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
-
-        # Browser button
-        self.browser_btn = QPushButton("Open Browser for Login")
-        self.browser_btn.clicked.connect(lambda: self._open_browser(login_url))
-        layout.addWidget(self.browser_btn)
-
-        # URL input
-        url_label = QLabel("Paste the redirect URL here:")
-        layout.addWidget(url_label)
-
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://tidal.com/android/login/auth?code=...")
-        layout.addWidget(self.url_input)
-
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _open_browser(self, url: str):
-        import webbrowser
-
-        try:
-            webbrowser.open(url)
-            self.browser_btn.setText("Browser Opened - Complete Login There")
-            self.browser_btn.setEnabled(False)
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to open browser: {e}")
-
-    def _validate_and_accept(self):
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "Error", "Please paste the redirect URL")
-            return
-        if "code=" not in url:
-            QMessageBox.warning(
-                self,
-                "Invalid URL",
-                "The URL doesn't appear to contain an authorization code.\n"
-                "Make sure you copied the full URL from the redirect page.",
-            )
-            return
-        self.redirect_url = url
-        self.accept()
-
-    def get_redirect_url(self) -> str | None:
-        return self.redirect_url
+        layout.setContentsMargins(8, 6, 8, 6)
+        self.name_label = QLabel(name)
+        self.name_label.setWordWrap(True)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.progress)
 
 
-class ConfirmDialog(QDialog):
-    def __init__(self, parent: QWidget | None, text: str):
+class TrackItemWidget(QWidget):
+    def __init__(self, sp_title: str, sp_artists: str, sp_album: str, sp_dur: str,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Confirm Transfer")
-        layout = QVBoxLayout(self)
-        self.text = QTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setPlainText(text)
-        layout.addWidget(self.text)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        # top: progress + status
+        top = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.status = QLabel("Queued")
+        self.status.setStyleSheet("color: #666;")
+        top.addWidget(self.progress, 1)
+        top.addWidget(self.status, 0, Qt.AlignmentFlag.AlignRight)
+        outer.addLayout(top)
+
+        # bottom: two groups side-by-side
+        bottom = QHBoxLayout()
+        bottom.setSpacing(12)
+
+        sp_group = QGroupBox("Spotify")
+        sp_layout = QVBoxLayout(sp_group)
+        sp_title_lbl = QLabel(f"<b>{sp_title}</b>")
+        sp_title_lbl.setTextFormat(Qt.TextFormat.RichText)
+        sp_artists_lbl = QLabel(sp_artists)
+        sp_album_lbl = QLabel(sp_album)
+        sp_dur_lbl = QLabel(sp_dur)
+        for w in (sp_title_lbl, sp_artists_lbl, sp_album_lbl, sp_dur_lbl):
+            w.setWordWrap(True)
+            sp_layout.addWidget(w)
+
+        td_group = QGroupBox("TIDAL match")
+        td_layout = QVBoxLayout(td_group)
+        self.td_label = QLabel("Pending…")
+        self.td_label.setWordWrap(True)
+        self.td_label.setTextFormat(Qt.TextFormat.RichText)
+        td_layout.addWidget(self.td_label)
+
+        bottom.addWidget(sp_group, 1)
+        bottom.addWidget(td_group, 1)
+        outer.addLayout(bottom)
+
+        self.setObjectName("TrackItem")
+        self.setStyleSheet(
+            "#TrackItem { border: 1px solid #ddd; border-radius: 6px; }"
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spoti2Tidal")
+        self.setWindowTitle("Spoti2Tidal – Playlist Sync")
         self.resize(1200, 800)
-        self.logger = logging.getLogger(__name__)
 
+        # services
         self.spotify = Spotify()
         self.tidal = Tidal()
+
+        # worker pool
         self.pool = QThreadPool.globalInstance()
+        # Allow parallel track matching
+        try:
+            # Keep modest concurrency to avoid API rate limits
+            self.pool.setMaxThreadCount(6)
+        except Exception:
+            pass
 
-        container = QWidget()
-        root = QVBoxLayout(container)
+        # UI
+        self._build_menu()
+        self._build_ui()
 
-        # Step 1: Connect your accounts
-        step1 = QLabel("Step 1: Connect your accounts")
-        step1.setStyleSheet("font-weight: 600;")
-        root.addWidget(step1)
+        # state
+        self.playlists: Dict[str, PlaylistState] = {}
 
-        top = QHBoxLayout()
-        self.btn_sp_login = QPushButton("Connect Spotify")
-        self.btn_sp_login.setToolTip("Sign in to your Spotify account")
-        self.btn_td_login = QPushButton("Login TIDAL")
-        self.btn_td_login.setToolTip("Sign in to your TIDAL account")
-        top.addWidget(self.btn_sp_login)
-        top.addWidget(self.btn_td_login)
-        top.addStretch(1)
-        self.status_label = QLabel("Ready")
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-        self.progress.setTextVisible(True)
-        top.addWidget(self.status_label)
-        top.addWidget(self.progress)
-        root.addLayout(top)
+        # kick off
+        self._load_spotify_playlists()
 
-        # Tabs for Spotify and Tidal
-        tabs = QTabWidget()
-        tabs.addTab(self._build_spotify_tab(), "Spotify")
-        tabs.addTab(self._build_tidal_tab(), "TIDAL")
-        root.addWidget(tabs)
+    # ---- UI scaffold ----
+    def _build_menu(self):
+        bar = self.menuBar()
+        acct = bar.addMenu("Account")
+        self.act_tidal_login = QAction("Connect TIDAL (PKCE)", self)
+        self.act_tidal_login.triggered.connect(self._handle_tidal_login)
+        acct.addAction(self.act_tidal_login)
 
-        # Step 2: Refresh playlists
-        step2 = QLabel("Step 2: Refresh playlists")
-        step2.setStyleSheet("font-weight: 600;")
-        root.addWidget(step2)
+    def _build_ui(self):
+        splitter = QSplitter()
+        splitter.setOrientation(Qt.Orientation.Horizontal)
+        self.setCentralWidget(splitter)
 
-        fetch_bar = QHBoxLayout()
-        self.btn_refresh_sp = QPushButton("Refresh Spotify")
-        self.btn_refresh_sp.setToolTip("Fetch your Spotify playlists")
-        self.btn_refresh_td = QPushButton("Refresh TIDAL")
-        self.btn_refresh_td.setToolTip("Fetch your TIDAL playlists")
-        self.btn_fetch = QPushButton("Refresh Both")
-        self.btn_fetch.setToolTip("Fetch playlists from both Spotify and TIDAL")
-        fetch_bar.addWidget(self.btn_refresh_sp)
-        fetch_bar.addWidget(self.btn_refresh_td)
-        fetch_bar.addWidget(self.btn_fetch)
-        fetch_bar.addStretch(1)
-        root.addLayout(fetch_bar)
+        # Left: sidebar playlists list
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
 
-        # Step 3 and 4
-        step34 = QLabel("Step 3: Cross-reference  |  Step 4: Push to TIDAL")
-        step34.setStyleSheet("font-weight: 600;")
-        root.addWidget(step34)
+        self.btn_reload = QPushButton("Reload Spotify Playlists")
+        self.btn_reload.clicked.connect(self._load_spotify_playlists)
+        left_layout.addWidget(self.btn_reload)
 
-        actions_bar = QHBoxLayout()
-        self.btn_crossref = QPushButton("Step 3: Cross-reference Selected Playlist")
-        self.btn_crossref.setToolTip("Match tracks from the selected Spotify playlist to TIDAL")
-        self.btn_transfer = QPushButton("Step 4: Push to TIDAL")
-        self.btn_transfer.setToolTip("Create/update the TIDAL playlist with matched tracks")
-        actions_bar.addWidget(self.btn_crossref)
-        actions_bar.addWidget(self.btn_transfer)
-        actions_bar.addStretch(1)
-        root.addLayout(actions_bar)
+        self.playlist_list = QListWidget()
+        self.playlist_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.playlist_list.currentItemChanged.connect(self._on_playlist_selected)
+        self.playlist_list.setSpacing(6)
+        left_layout.addWidget(self.playlist_list, 1)
 
-        # Cross-reference results table
-        self.xref_table = QTableWidget(0, 4)
-        self.xref_table.setHorizontalHeaderLabels(["Spotify", "Match (TIDAL)", "Quality", "Status"])
-        self.xref_table.setAlternatingRowColors(True)
-        self.xref_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.xref_table.setSortingEnabled(True)
-        hh = self.xref_table.horizontalHeader()
-        hh.setStretchLastSection(False)
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        root.addWidget(self.xref_table)
+        splitter.addWidget(left)
 
-        self.setCentralWidget(container)
+    # Right: scroll area for tracks of selected playlist
+        self.right_stack = QWidget()
+        self.right_layout = QVBoxLayout(self.right_stack)
+        self.right_layout.setContentsMargins(8, 8, 8, 8)
+        self.right_layout.setSpacing(8)
+        # Placeholder
+        self.placeholder = QLabel("Select a playlist to start syncing.")
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder.setStyleSheet("color: #666; font-size: 14px;")
+        self.right_layout.addWidget(self.placeholder, 1)
 
-        # Signals
-        self.btn_sp_login.clicked.connect(self._connect_spotify)
-        self.btn_td_login.clicked.connect(self._connect_tidal)
-        # Scoped refresh: set scope flag and call unified fetch
-        self.btn_refresh_sp.clicked.connect(lambda: (setattr(self, "_fetch_scope", "spotify"), self._fetch_all()))
-        self.btn_refresh_td.clicked.connect(lambda: (setattr(self, "_fetch_scope", "tidal"), self._fetch_all()))
-        self.btn_fetch.clicked.connect(lambda: (setattr(self, "_fetch_scope", "both"), self._fetch_all()))
-        self.btn_crossref.clicked.connect(self._cross_reference)
-        self.btn_transfer.clicked.connect(self._transfer)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.right_stack)
 
-        # Data holders
-        self.spotify_playlists: List[SpotifyPlaylist] = []
-        self.tidal_playlists: List[TidalPlaylist] = []
-        self.spotify_tracks_by_playlist: Dict[str, List[SpotifyTrack]] = {}
-        self.tidal_tracks_by_playlist: Dict[str, List[TidalTrack]] = {}
-        self.crossref_selection: List[Tuple[SpotifyTrack, TidalTrack]] = []
-        # Fetch scope: 'spotify', 'tidal', or 'both'
-        self._fetch_scope: str = "both"
+        splitter.addWidget(scroll)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
-    def _build_spotify_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.sp_list = QListWidget()
-        self.sp_list.setAlternatingRowColors(True)
-        self.sp_list.setToolTip("Your Spotify playlists. Select one to preview tracks and cross-reference.")
-        self.sp_tracks = QTableWidget(0, 4)
-        self.sp_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Duration"])
-        self.sp_tracks.setAlternatingRowColors(True)
-        self.sp_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        hh = self.sp_tracks.horizontalHeader()
-        hh.setStretchLastSection(False)
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        splitter.addWidget(self.sp_list)
-        splitter.addWidget(self.sp_tracks)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter)
-        self.sp_list.itemSelectionChanged.connect(self._load_spotify_tracks_for_selected)
-        return page
+    # ---- Actions ----
+    def _handle_tidal_login(self):
+        if self.tidal.ensure_logged_in():
+            QMessageBox.information(self, "TIDAL", "Already logged in to TIDAL.")
+            return
+        url = self.tidal.get_pkce_login_url()
+        QApplication.clipboard().setText(url)
+        QMessageBox.information(
+            self,
+            "TIDAL Login",
+            "A PKCE login URL has been copied to your clipboard.\n"
+            "Open it in a browser, complete login, then copy the final redirect URL and paste it in the next dialog.",
+        )
+        ok = False
+        from PyQt6.QtWidgets import QInputDialog
 
-    def _build_tidal_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.td_list = QListWidget()
-        self.td_list.setAlternatingRowColors(True)
-        self.td_list.setToolTip("Your TIDAL playlists. Select one to preview tracks.")
-        self.td_tracks = QTableWidget(0, 5)
-        self.td_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Quality", "ID"])
-        self.td_tracks.setAlternatingRowColors(True)
-        self.td_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        hh = self.td_tracks.horizontalHeader()
-        hh.setStretchLastSection(False)
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        splitter.addWidget(self.td_list)
-        splitter.addWidget(self.td_tracks)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter)
-        self.td_list.itemSelectionChanged.connect(self._load_tidal_tracks_for_selected)
-        return page
-
-    # ---- actions ----
-    def _connect_spotify(self):
-        self.logger.info("Connect Spotify clicked")
-
-        def work():
-            return self.spotify.get_user()
-
-        def done(user):
+        redirected, ok = QInputDialog.getText(
+            self,
+            "Complete TIDAL Login",
+            "Paste the final redirect URL after logging in:",
+        )
+        if ok and redirected:
             try:
-                self.status_label.setText(f"Spotify: {user.get('display_name', 'OK')}")
+                success = self.tidal.complete_pkce_login(redirected)
+                if success:
+                    QMessageBox.information(self, "TIDAL", "Logged in successfully.")
+                else:
+                    QMessageBox.warning(self, "TIDAL", "Login failed.")
+            except Exception as e:
+                QMessageBox.critical(self, "TIDAL", f"Login error: {e}")
+
+    # ---- Spotify playlists ----
+    def _load_spotify_playlists(self):
+        self.playlist_list.clear()
+        self.playlists.clear()
+
+        def on_done(items: List[dict]):
+            if not items:
+                QMessageBox.information(self, "Spotify", "No playlists found or not authenticated.")
+                return
+            for pl in items:
+                pid = pl.get("id")
+                name = pl.get("name") or pid
+                widget = PlaylistListItem(name)
+                item = QListWidgetItem(self.playlist_list)
+                item.setSizeHint(widget.sizeHint())
+                self.playlist_list.addItem(item)
+                self.playlist_list.setItemWidget(item, widget)
+
+                # right-side container for this playlist
+                container = QWidget()
+                c_layout = QVBoxLayout(container)
+                c_layout.setContentsMargins(0, 0, 0, 0)
+                c_layout.setSpacing(8)
+                header_row = QHBoxLayout()
+                hdr = QLabel(f"<h2>{name}</h2>")
+                hdr.setTextFormat(Qt.TextFormat.RichText)
+                header_row.addWidget(hdr, 1)
+                btn_sync = QPushButton("Sync to TIDAL")
+                btn_sync.setToolTip("Create a TIDAL playlist and add all matched tracks")
+                # bind handler later when we have state dict key
+                header_row.addWidget(btn_sync, 0)
+                c_layout.addLayout(header_row)
+
+                tracks_area = QWidget()
+                tracks_layout = QVBoxLayout(tracks_area)
+                tracks_layout.setContentsMargins(0, 0, 0, 0)
+                tracks_layout.setSpacing(8)
+                c_layout.addWidget(tracks_area)
+                c_layout.addStretch(1)
+
+                self.playlists[pid] = PlaylistState(
+                    playlist=pl,
+                    list_item=item,
+                    list_widget=widget,
+                    name_label=widget.name_label,
+                    progress_bar=widget.progress,
+                    container=container,
+                    tracks_area=tracks_area,
+                    tracks_layout=tracks_layout,
+                )
+                # Connect button now that state exists
+                btn_sync.clicked.connect(functools.partial(self._transfer_to_tidal, pid))
+
+            # Select first by default
+            if self.playlist_list.count() > 0:
+                self.playlist_list.setCurrentRow(0)
+
+        def on_error(e: Exception):
+            QMessageBox.critical(self, "Spotify", f"Failed to load playlists: {e}")
+
+        # Ensure we have user to set market, etc.
+        def fetch_playlists(progress_callback=None):
+            try:
+                self.spotify.get_user()
             except Exception:
-                self.status_label.setText("Spotify connected")
+                pass
+            return self.spotify.get_user_playlists(progress_callback=progress_callback)
 
         run_in_background(
             self.pool,
-            work,
-            done,
-            on_error=lambda e: self.status_label.setText(f"Spotify login failed: {e}"),
+            fetch_playlists,
+            on_done=on_done,
+            on_error=on_error,
+            on_progress=None,  # per requirement, no global bar; we could animate list later
         )
 
-    def _connect_tidal(self):
-        self.logger.info("Connect TIDAL clicked")
-
-        # First check if already logged in
-        if self.tidal.is_logged_in():
-            user = self.tidal.get_user()
-            name = getattr(user, "name", "OK") if user else "OK"
-            self.status_label.setText(f"TIDAL: {name}")
+    def _on_playlist_selected(self, current: QListWidgetItem, previous: Optional[QListWidgetItem]):
+        if not current:
+            return
+        # find playlist id by matching item
+        pid = None
+        for k, st in self.playlists.items():
+            if st.list_item is current:
+                pid = k
+                break
+        if not pid:
+            # match by pointer equality; fallback: index
+            row = self.playlist_list.currentRow()
+            keys = list(self.playlists.keys())
+            if 0 <= row < len(keys):
+                pid = keys[row]
+        if not pid:
             return
 
-        # Try to refresh token if available
-        if self.tidal.ensure_logged_in():
-            user = self.tidal.get_user()
-            name = getattr(user, "name", "OK") if user else "OK"
-            self.status_label.setText(f"TIDAL: {name}")
-            return
+        # swap in this playlist container
+        # clear right_layout and insert this container
+        while self.right_layout.count():
+            item = self.right_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        self.right_layout.addWidget(self.playlists[pid].container, 1)
 
-        # Need to do PKCE login
-        login_url = self.tidal.get_pkce_login_url()
-        dialog = TidalLoginDialog(self, login_url)
+        # kick off sync if not started
+        if not self.playlists[pid].started:
+            self._start_playlist_sync(pid)
 
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            redirect_url = dialog.get_redirect_url()
-            if redirect_url:
-                try:
-                    # Complete the login in a background thread
-                    def work():
-                        success = self.tidal.complete_pkce_login(redirect_url)
-                        if success:
-                            return self.tidal.get_user()
-                        return None
+    # ---- per-playlist flow ----
+    def _start_playlist_sync(self, playlist_id: str):
+        st = self.playlists[playlist_id]
+        st.started = True
+        st.progress_bar.setFormat("Fetching tracks… %p%")
 
-                    def done(user):
-                        if user:
-                            name = getattr(user, "name", "OK") if user else "OK"
-                            self.status_label.setText(f"TIDAL: {name}")
-                            QMessageBox.information(self, "Success", "Successfully logged in to TIDAL!")
-                        else:
-                            self.status_label.setText("TIDAL login failed")
-                            QMessageBox.warning(self, "Error", "Failed to complete TIDAL login")
+        def on_tracks_done(items: List[dict]):
+            # Build track widgets
+            for idx, it in enumerate(items):
+                track = it.get("track") or {}
+                name = track.get("name", "<unknown>")
+                artists = ", ".join(a.get("name") for a in (track.get("artists") or []) if a)
+                album = (track.get("album") or {}).get("name", "")
+                dur_ms = track.get("duration_ms") or 0
+                dur_txt = self._fmt_duration(dur_ms)
 
-                    def on_error(e):
-                        self.status_label.setText(f"TIDAL login failed: {e}")
-                        QMessageBox.warning(self, "Error", f"TIDAL login failed: {e}")
-
-                    run_in_background(self.pool, work, done, on_error=on_error)
-                except Exception as e:
-                    self.logger.exception("TIDAL login failed")
-                    self.status_label.setText(f"TIDAL login failed: {e}")
-                    QMessageBox.warning(self, "Error", f"TIDAL login failed: {e}")
-        else:
-            self.status_label.setText("TIDAL login cancelled")
-
-    def _fetch_all(self):
-        scope = getattr(self, "_fetch_scope", "both")
-        self.logger.info(f"Refreshing playlists (scope={scope})")
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        if scope == "spotify":
-            self.status_label.setText("Refreshing Spotify playlists...")
-        elif scope == "tidal":
-            self.status_label.setText("Refreshing TIDAL playlists...")
-        else:
-            self.status_label.setText("Refreshing Spotify and TIDAL playlists...")
-
-        sp_weight = 50 if scope in ("both", "spotify") else 0
-        td_weight = 50 if scope in ("both", "tidal") else 0
-
-        # Spotify fetch
-        if sp_weight:
-            def sp_fetch(progress_callback=None):
-                return self.spotify.get_user_playlists(progress_callback=progress_callback)
-
-            def sp_done(pls):
-                self.spotify_playlists = pls
-                self.sp_list.clear()
-                for pl in pls:
-                    name = pl.get("name") if isinstance(pl, dict) else getattr(pl, "name", "")
-                    pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
-                    self.sp_list.addItem(f"{name} ({pid})")
-                if scope == "spotify":
-                    self.progress.setValue(100)
-                else:
-                    self.progress.setValue(sp_weight)
-
-            def sp_progress(p):
-                self.progress.setValue(int(p * (sp_weight)))
-
-            run_in_background(self.pool, sp_fetch, sp_done, on_progress=sp_progress)
-
-        # TIDAL fetch
-        if td_weight:
-            def td_fetch(progress_callback=None):
-                return self.tidal.get_user_playlists(progress_callback=progress_callback)
-
-            def td_done(tpls):
-                self.tidal_playlists = tpls
-                self.td_list.clear()
-                for pl in tpls:
-                    name = getattr(pl, "name", "")
-                    pid = getattr(pl, "id", "")
-                    self.td_list.addItem(f"{name} ({pid})")
-                if scope == "tidal":
-                    self.progress.setValue(100)
-                else:
-                    self.progress.setValue(sp_weight + td_weight)
-
-            def td_progress(p):
-                self.progress.setValue(sp_weight + int(p * (td_weight)))
-
-            run_in_background(self.pool, td_fetch, td_done, on_progress=td_progress)
-
-    def _load_spotify_tracks_for_selected(self):
-        self.logger.debug("Loading Spotify tracks for selected playlist")
-        row = self.sp_list.currentRow()
-        if row < 0:
-            return
-        pl = self.spotify_playlists[row]
-        pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
-
-        def fetch(progress_callback=None):
-            return self.spotify.get_playlist_tracks(
-                pid, progress_callback=progress_callback
-            )
-
-        def done(tracks):
-            self.spotify_tracks_by_playlist[pid] = tracks
-            self._populate_spotify_tracks(tracks)
-
-        run_in_background(self.pool, fetch, done)
-
-    def _populate_spotify_tracks(self, items: List[dict]):
-        self.sp_tracks.setRowCount(0)
-        for item in items:
-            track = SpotifyTrack.from_api(item) if isinstance(item, dict) else item
-            if not track:
-                continue
-            name = track.name
-            artist = track.artists_names
-            album = track.album_name
-            duration = track.duration_formatted
-            row = self.sp_tracks.rowCount()
-            self.sp_tracks.insertRow(row)
-            self.sp_tracks.setItem(row, 0, QTableWidgetItem(name))
-            self.sp_tracks.setItem(row, 1, QTableWidgetItem(artist))
-            self.sp_tracks.setItem(row, 2, QTableWidgetItem(album))
-            self.sp_tracks.setItem(row, 3, QTableWidgetItem(duration))
-
-    def _load_tidal_tracks_for_selected(self):
-        self.logger.debug("Loading TIDAL tracks for selected playlist")
-        row = self.td_list.currentRow()
-        if row < 0:
-            return
-        pl = self.tidal_playlists[row]
-        pid = getattr(pl, "id", "")
-
-        def fetch(progress_callback=None):
-            return self.tidal.get_playlist_tracks(
-                pid, progress_callback=progress_callback
-            )
-
-        def done(tracks):
-            self.tidal_tracks_by_playlist[pid] = tracks
-            self._populate_tidal_tracks(tracks)
-
-        run_in_background(self.pool, fetch, done)
-
-    def _populate_tidal_tracks(self, items: List):
-        self.td_tracks.setRowCount(0)
-        for t in items:
-            name = getattr(t, "name", "") or getattr(t, "full_name", "")
-            artist = ", ".join(
-                getattr(a, "name", "") for a in (getattr(t, "artists", []) or [])
-            )
-            album = getattr(getattr(t, "album", None), "name", "")
-            quality = Tidal.quality_label(t)
-            tid = str(getattr(t, "id", ""))
-            row = self.td_tracks.rowCount()
-            self.td_tracks.insertRow(row)
-            self.td_tracks.setItem(row, 0, QTableWidgetItem(name))
-            self.td_tracks.setItem(row, 1, QTableWidgetItem(artist))
-            self.td_tracks.setItem(row, 2, QTableWidgetItem(album))
-            self.td_tracks.setItem(row, 3, QTableWidgetItem(quality))
-            self.td_tracks.setItem(row, 4, QTableWidgetItem(tid))
-
-    def _cross_reference(self):
-        self.logger.info("Starting cross-reference")
-        self.status_label.setText("Cross-referencing...")
-        # indeterminate progress until first update
-        self.progress.setRange(0, 0)
-        # disable buttons while running
-        self.btn_crossref.setEnabled(False)
-        self.btn_transfer.setEnabled(False)
-        self.btn_fetch.setEnabled(False)
-        row = self.sp_list.currentRow()
-        if row < 0:
-            self.status_label.setText("Select a Spotify playlist first")
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
-            self.btn_crossref.setEnabled(True)
-            self.btn_transfer.setEnabled(True)
-            self.btn_fetch.setEnabled(True)
-            return
-        pl = self.spotify_playlists[row]
-        pid = pl.get("id") if isinstance(pl, dict) else getattr(pl, "id", "")
-
-        def ensure_tracks():
-            tr = self.spotify_tracks_by_playlist.get(pid)
-            if not tr:
-                tr = self.spotify.get_playlist_tracks(pid, progress_callback=None)
-            return tr
-
-        def work(progress_callback=None):
-            tracks = ensure_tracks()
-            matches: List[Tuple[SpotifyTrack, TidalTrack]] = []
-            total = len(tracks)
-            done_count = 0
-            for item in tracks:
-                sp = SpotifyTrack.from_api(item) if isinstance(item, dict) else item
-                isrc = (sp.external_ids or {}).get("isrc") if sp.external_ids else None
-                best = self.tidal.resolve_best_match(
-                    isrc=isrc,
-                    name=sp.name,
-                    artists=sp.artists,
-                    duration_ms=sp.duration_ms,
+                tw = TrackItemWidget(name, artists, album, dur_txt)
+                st.tracks_layout.addWidget(tw)
+                tstate = TrackState(
+                    index=idx,
+                    sp_item=it,
+                    widget=tw,
+                    progress_bar=tw.progress,
+                    tidal_label=tw.td_label,
+                    status_label=tw.status,
                 )
-                matches.append((sp, best))
-                done_count += 1
-                if progress_callback and total:
-                    progress_callback(int(done_count / total * 100))
-            return matches
+                st.tracks.append(tstate)
 
-        def on_progress(p):
-            if self.progress.maximum() == 0:
-                self.progress.setRange(0, 100)
-            self.progress.setValue(p)
+            st.progress_bar.setFormat("Matching tracks… %p%")
+            # Begin matching concurrently
+            for tstate in st.tracks:
+                self._match_track_async(playlist_id, tstate)
 
-        def done(matches):
-            self.crossref_selection = matches
-            matched = sum(1 for _, b in matches if b)
-            self.status_label.setText(f"Matched {matched} / {len(matches)}")
-            # populate table (disable sorting to avoid row reordering during insert)
-            prev_sort = self.xref_table.isSortingEnabled()
-            self.xref_table.setSortingEnabled(False)
-            self.xref_table.setRowCount(0)
-            for sp, td in matches:
-                row_idx = self.xref_table.rowCount()
-                self.xref_table.insertRow(row_idx)
-                sp_artist_str = ", ".join(a.get("name", "") for a in getattr(sp, "artists", []) or [])
-                self.xref_table.setItem(
-                    row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp_artist_str}")
-                )
-                if td:
-                    name = getattr(td, "name", "") or getattr(td, "full_name", "")
-                    artist = ", ".join(
-                        getattr(a, "name", "")
-                        for a in (getattr(td, "artists", []) or [])
-                    )
-                    qual = Tidal.quality_label(td)
-                    self.xref_table.setItem(
-                        row_idx, 1, QTableWidgetItem(f"{name} — {artist}")
-                    )
-                    self.xref_table.setItem(row_idx, 2, QTableWidgetItem(qual))
-                    self.xref_table.setItem(row_idx, 3, QTableWidgetItem("OK"))
-                else:
-                    self.xref_table.setItem(row_idx, 1, QTableWidgetItem("No match"))
-                    self.xref_table.setItem(row_idx, 2, QTableWidgetItem("-"))
-                    self.xref_table.setItem(row_idx, 3, QTableWidgetItem("Missing"))
-            self.xref_table.setSortingEnabled(prev_sort)
-            # re-enable
-            self.btn_crossref.setEnabled(True)
-            self.btn_transfer.setEnabled(True)
-            self.btn_fetch.setEnabled(True)
-            self.progress.setRange(0, 100)
-            self.progress.setValue(100)
+        def on_tracks_progress(pct: int):
+            # during fetch, reflect percent
+            st.progress_bar.setValue(pct)
 
-        def on_error(e):
-            self.status_label.setText(f"Cross-reference failed: {e}")
-            self.btn_crossref.setEnabled(True)
-            self.btn_transfer.setEnabled(True)
-            self.btn_fetch.setEnabled(True)
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
+        def on_tracks_error(e: Exception):
+            QMessageBox.critical(self, "Spotify", f"Failed to fetch tracks: {e}")
+            st.started = False
 
         run_in_background(
-            self.pool, work, done, on_error=on_error, on_progress=on_progress
+            self.pool,
+            functools.partial(self.spotify.get_playlist_tracks, playlist_id),
+            on_done=on_tracks_done,
+            on_error=on_tracks_error,
+            on_progress=on_tracks_progress,
         )
 
-    def _transfer(self):
-        self.logger.info("Starting transfer to TIDAL")
-        if not self.crossref_selection:
-            self.status_label.setText("Run cross-reference first")
+    # ---- transfer to TIDAL ----
+    def _transfer_to_tidal(self, playlist_id: str):
+        st = self.playlists.get(playlist_id)
+        if not st:
+            return
+        # collect matched ids
+        ids = [t.matched_track_id for t in st.tracks if t.matched_track_id]
+        if not ids:
+            QMessageBox.information(self, "Transfer", "No matched tracks to transfer yet.")
+            return
+        if not self.tidal.ensure_logged_in():
+            QMessageBox.warning(self, "TIDAL", "Please connect your TIDAL account first (Account > Connect TIDAL).")
             return
 
-        def preview_text():
-            lines = []
-            for sp, td in self.crossref_selection[:100]:
-                td_n = getattr(td, "name", "-") if td else "-"
-                td_q = Tidal.quality_label(td) if td else ""
-                lines.append(f"{sp.name} -> {td_n} [{td_q}]")
-            return "\n".join(lines)
+        name = st.playlist.get("name") or "From Spotify"
+        st.progress_bar.setFormat("Transferring… %p%")
+        st.progress_bar.setValue(0)
 
-        dlg = ConfirmDialog(self, preview_text())
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        def do_transfer(progress_callback=None) -> Tuple[bool, Optional[str]]:
+            # Create playlist if needed
+            if not st.tidal_playlist_id:
+                created = self.tidal.create_playlist(name, description="Imported from Spotify")
+                if not created:
+                    return False, "Failed to create TIDAL playlist"
+                st.tidal_playlist_id = getattr(created, "id", None)
+            pid = st.tidal_playlist_id
+            if not pid:
+                return False, "No TIDAL playlist id"
+            # Add in batches with progress
+            batch_size = 50
+            total = len(ids)
+            added = 0
+            from math import ceil
 
-        row = self.sp_list.currentRow()
-        pl = self.spotify_playlists[row]
-        sp_name = pl.get("name") if isinstance(pl, dict) else getattr(pl, "name", "")
+            for i in range(0, total, batch_size):
+                batch = ids[i:i+batch_size]
+                ok = self.tidal.add_tracks_to_playlist(pid, batch)
+                added += len(batch) if ok else 0
+                if progress_callback:
+                    progress_callback(min(99, int(added / total * 100)))
+            if progress_callback:
+                progress_callback(100)
+            return True, None
 
-        def work():
-            # find or create
-            target = None
-            for tpl in self.tidal_playlists:
-                if getattr(tpl, "name", "") == sp_name:
-                    target = tpl
-                    break
-            if not target:
-                target = self.tidal.create_playlist(
-                    sp_name, description="Imported from Spotify"
-                )
-                if target:
-                    self.tidal_playlists.append(target)
-            if not target:
-                raise RuntimeError("Failed to create TIDAL playlist")
-            target_id = getattr(target, "id", None)
-            if not target_id:
-                raise RuntimeError("Invalid TIDAL playlist id")
-            existing_ids = set(self.tidal.get_playlist_track_ids(target_id))
-            to_add = []
-            for _, td in self.crossref_selection:
-                if not td:
-                    continue
-                tid = int(getattr(td, "id", -1))
-                if tid > 0 and tid not in existing_ids:
-                    to_add.append(tid)
-            ok = self.tidal.add_tracks_to_playlist(target_id, to_add)
-            return ok, sp_name, len(to_add)
-
-        def done(result):
-            ok, name, count = result
+        def on_done(res: Tuple[bool, Optional[str]]):
+            ok, err = res
             if ok:
-                self.status_label.setText(f"Added {count} tracks to '{name}'")
+                QMessageBox.information(self, "Transfer", "Playlist transferred to TIDAL.")
+                st.progress_bar.setFormat("Completed 100%")
+                st.progress_bar.setValue(100)
             else:
-                self.status_label.setText("Failed to add tracks")
+                QMessageBox.critical(self, "Transfer", err or "Transfer failed")
+
+        def on_progress(pct: int):
+            st.progress_bar.setValue(pct)
+
+        def on_error(e: Exception):
+            QMessageBox.critical(self, "Transfer", f"Error: {e}")
 
         run_in_background(
-            self.pool, work, done, on_error=lambda e: self.status_label.setText(str(e))
+            self.pool,
+            do_transfer,
+            on_done=on_done,
+            on_error=on_error,
+            on_progress=on_progress,
         )
+
+    def _update_playlist_progress(self, playlist_id: str):
+        st = self.playlists[playlist_id]
+        if not st.tracks:
+            return
+        total = len(st.tracks)
+        done = sum(1 for t in st.tracks if t.progress >= 100)
+        # If matching in-progress, average of per-track progress is more informative
+        avg = int(sum(t.progress for t in st.tracks) / max(1, total))
+        st.progress_bar.setValue(avg)
+        if done == total:
+            st.progress_bar.setFormat("Completed 100%")
+            st.completed = True
+
+    # ---- per-track matching ----
+    def _match_track_async(self, playlist_id: str, tstate: TrackState):
+        sp_track = tstate.sp_item.get("track") or {}
+        name = sp_track.get("name")
+        artists = sp_track.get("artists") or []
+        duration_ms = sp_track.get("duration_ms")
+        isrc = (sp_track.get("external_ids") or {}).get("isrc")
+        album = (sp_track.get("album") or {}).get("name")
+
+        # matching wrapper with pseudo-progress milestones
+        def do_match(progress_callback=None) -> Tuple[Optional[int], Optional[str]]:
+            # Ensure TIDAL session if possible (won't block)
+            try:
+                self.tidal.ensure_logged_in()
+            except Exception:
+                pass
+
+            if progress_callback:
+                progress_callback(5)
+
+            best = self.tidal.resolve_best_match(
+                isrc=isrc, name=name, artists=artists, duration_ms=duration_ms, album=album
+            )
+            if progress_callback:
+                progress_callback(100 if best else 100)
+            if best is None:
+                return None, None
+            tid = getattr(best, "id", None)
+            # Build nice label
+            td_name = getattr(best, "name", "") or getattr(best, "full_name", "")
+            td_artists = ", ".join(getattr(a, "name", "") for a in getattr(best, "artists", []) if a)
+            td_album = getattr(getattr(best, "album", None), "name", "")
+            q = self.tidal.quality_label(best)
+            label = f"{td_name} — {td_artists}\n{td_album}  •  {q}"
+            return int(tid) if tid is not None else None, label
+
+        def on_done(res: Tuple[Optional[int], Optional[str]]):
+            tid, label = res
+            if tid is None:
+                tstate.tidal_label.setText("No match found")
+                tstate.tidal_label.setStyleSheet("color: #b00;")
+                tstate.status_label.setText("No match")
+            else:
+                tstate.matched_track_id = tid
+                tstate.tidal_label.setText(label or "Matched")
+                tstate.tidal_label.setStyleSheet("")
+                tstate.status_label.setText("Matched")
+            tstate.progress = 100
+            tstate.progress_bar.setValue(100)
+            self._update_playlist_progress(playlist_id)
+
+        def on_progress(pct: int):
+            tstate.progress = pct
+            tstate.progress_bar.setValue(pct)
+            if pct < 100:
+                tstate.status_label.setText(f"Matching… {pct}%")
+            self._update_playlist_progress(playlist_id)
+
+        def on_error(e: Exception):
+            tstate.tidal_label.setText(f"Error: {e}")
+            tstate.tidal_label.setStyleSheet("color: #b00;")
+            tstate.status_label.setText("Error")
+            tstate.progress = 100
+            tstate.progress_bar.setValue(100)
+            self._update_playlist_progress(playlist_id)
+
+        run_in_background(
+            self.pool,
+            do_match,
+            on_done=on_done,
+            on_error=on_error,
+            on_progress=on_progress,
+        )
+
+    # ---- helpers ----
+    @staticmethod
+    def _fmt_duration(ms: int) -> str:
+        try:
+            total_s = int(round((ms or 0) / 1000))
+            m = total_s // 60
+            s = total_s % 60
+            return f"{m}:{s:02d}"
+        except Exception:
+            return "-:--"
+
+
+__all__ = ["MainWindow"]
