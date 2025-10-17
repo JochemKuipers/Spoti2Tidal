@@ -539,7 +539,9 @@ class MainWindow(QMainWindow):
             self.crossref_selection = matches
             matched = sum(1 for _, b in matches if b)
             self.status_label.setText(f"Matched {matched} / {len(matches)}")
-            # populate table
+            # populate table (disable sorting to avoid row reordering during insert)
+            prev_sort = self.xref_table.isSortingEnabled()
+            self.xref_table.setSortingEnabled(False)
             self.xref_table.setRowCount(0)
             for sp, td in matches:
                 row_idx = self.xref_table.rowCount()
@@ -564,6 +566,7 @@ class MainWindow(QMainWindow):
                     self.xref_table.setItem(row_idx, 1, QTableWidgetItem("No match"))
                     self.xref_table.setItem(row_idx, 2, QTableWidgetItem("-"))
                     self.xref_table.setItem(row_idx, 3, QTableWidgetItem("Missing"))
+            self.xref_table.setSortingEnabled(prev_sort)
             # re-enable
             self.btn_crossref.setEnabled(True)
             self.btn_transfer.setEnabled(True)
