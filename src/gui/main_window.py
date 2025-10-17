@@ -469,9 +469,21 @@ class MainWindow(QMainWindow):
         # If matching in-progress, average of per-track progress is more informative
         avg = int(sum(t.progress for t in st.tracks) / max(1, total))
         st.progress_bar.setValue(avg)
-        if done == total:
+        if done == total and not st.completed:
             st.progress_bar.setFormat("Completed 100%")
             st.completed = True
+            # Move to next playlist automatically
+            self._move_to_next_playlist()
+
+    def _move_to_next_playlist(self):
+        """Move to the next playlist in the list after current one completes."""
+        current_row = self.playlist_list.currentRow()
+        total_rows = self.playlist_list.count()
+        
+        # If there's a next playlist, select it
+        if current_row < total_rows - 1:
+            next_row = current_row + 1
+            self.playlist_list.setCurrentRow(next_row)
 
     # ---- per-track matching ----
     def _match_track_async(self, playlist_id: str, tstate: TrackState):
