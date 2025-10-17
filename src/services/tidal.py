@@ -374,6 +374,13 @@ class Tidal:
         # Preserve acronyms by removing dots between alphanumerics (e.g., y.t.t.y -> ytty)
         t = re.sub(r"(?<=\w)\.(?=\w)", "", t)
 
+        # Preserve word continuity by removing apostrophes between alphanumerics (e.g., emperor's -> emperors)
+        t = re.sub(r"(?<=\w)['’](?=\w)", "", t)
+
+        # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
+        t = re.sub(r"[^a-z0-9]+", " ", t)
+
+
         # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
         t = re.sub(r"[^a-z0-9]+", " ", t)
         t = re.sub(r"\s+", " ", t).strip()
