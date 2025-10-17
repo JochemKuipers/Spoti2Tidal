@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
                 best = self.tidal.resolve_best_match(
                     isrc=isrc,
                     name=sp.name,
-                    artist=sp.artists_names,
+                    artists=sp.artists,
                     duration_ms=sp.duration_ms,
                 )
                 matches.append((sp, best))
@@ -363,8 +363,9 @@ class MainWindow(QMainWindow):
             for sp, td in matches:
                 row_idx = self.xref_table.rowCount()
                 self.xref_table.insertRow(row_idx)
+                sp_artist_str = ", ".join(a.get("name", "") for a in getattr(sp, "artists", []) or [])
                 self.xref_table.setItem(
-                    row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp.artists_names}")
+                    row_idx, 0, QTableWidgetItem(f"{sp.name} — {sp_artist_str}")
                 )
                 if td:
                     name = getattr(td, "name", "") or getattr(td, "full_name", "")

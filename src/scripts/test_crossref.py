@@ -9,7 +9,7 @@ from src.logging_config import setup_logging
 
 
 SPOTIFY_TRACK_URL = (
-    "https://open.spotify.com/track/1eQm8886T4qgeqXdG7YYww?si=144318645e404e02"
+    "https://open.spotify.com/track/3k7kjsfhINLdYzl8kPFlGB?si=8c8f66ff61e14a28"
 )
 
 
@@ -39,7 +39,7 @@ def main():
     sp_client = sp.get_client()
     sp_track = sp_client.track(track_id)
     name = sp_track.get("name")
-    artists = ", ".join(a.get("name", "") for a in sp_track.get("artists", []))
+    artists = sp_track.get("artists")
     duration_ms = sp_track.get("duration_ms")
     isrc = (sp_track.get("external_ids", {}) or {}).get("isrc")
 
@@ -52,7 +52,7 @@ def main():
 
     # Try resolve best match
     best = td.resolve_best_match(
-        isrc=isrc, name=name, artist=artists, duration_ms=duration_ms
+        isrc=isrc, name=name, artists=artists, duration_ms=duration_ms
     )
     if best:
         td_name = getattr(best, "name", "") or getattr(best, "full_name", "")

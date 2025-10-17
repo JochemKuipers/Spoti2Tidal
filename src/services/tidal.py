@@ -253,19 +253,55 @@ class Tidal:
         return tracks
 
     def search_by_name_artist(
-        self, name: str, artist: str
+        self, name: str, artists: list | str
     ) -> List[tidalapi.media.Track]:
         self.logger.info(
-            f"Searching TIDAL for tracks by name and artist: {name} {artist}"
+            f"Searching TIDAL for tracks by name and artist(s): {name} | {artists}"
         )
         if not name:
             return []
-        query = f"{name} {artist}" if artist else name
-        tracks = self._search_tracks(query, limit=25)
+        if not artists:
+            return self._search_tracks(name, limit=25)
+
+        # Normalize artists to a list of strings
+        if isinstance(artists, str):
+            artists_list = [artists]
+        else:
+            artists_list = [
+                a.get("name") if isinstance(a, dict) else a.strip() for a in artists
+            ]
+        artists_list = [a for a in artists_list if a]  # remove empty
+
+        all_results: List[tidalapi.media.Track] = []
+        seen_ids = set()
+
+        # 1. Perform one query for each single artist
+        for artist_name in artists_list:
+            sub_query = f"{name} {artist_name}"
+            results = self._search_tracks(sub_query, limit=25)
+            for t in results:
+                tid = getattr(t, "id", None)
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
+                all_results.append(t)
+
+        # 2. Also perform a query with all artists together (if more than one), e.g. "name artist1 artist2 ..."
+        if len(artists_list) > 1:
+            combined_artists = " ".join(artists_list)
+            sub_query = f"{name} {combined_artists}"
+            results = self._search_tracks(sub_query, limit=25)
+            for t in results:
+                tid = getattr(t, "id", None)
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
+                all_results.append(t)
+
         self.logger.info(
-            f"Found {len(tracks)} TIDAL tracks for name and artist: {name} {artist}"
+            f"Found {len(all_results)} TIDAL tracks across progressive artist queries for: {name} | {artists}"
         )
-        return tracks
+        return all_results
 
     @staticmethod
     def _quality_rank(track: tidalapi.media.Track) -> int:
@@ -335,6 +371,9 @@ class Tidal:
         t = re.sub(r"[\[(].*?(feat\.?|with\.?).*?[\])]", "", t, flags=re.IGNORECASE)
         t = re.sub(r"\s*(feat\.|with\.)\s.*$", "", t, flags=re.IGNORECASE)
 
+        # Preserve acronyms by removing dots between alphanumerics (e.g., y.t.t.y -> ytty)
+        t = re.sub(r"(?<=\w)\.(?=\w)", "", t)
+
         # Remove any remaining punctuation, collapse whitespace, tack on tail if needed
         t = re.sub(r"[^a-z0-9]+", " ", t)
         t = re.sub(r"\s+", " ", t).strip()
@@ -377,10 +416,21 @@ class Tidal:
         return 0
 
     @staticmethod
-    def _artist_score(sp_artists: str, td_artists_list) -> int:
+    def _artist_score(sp_artists, td_artists_list) -> int:
+        # sp_artists may be a string, list[str], or list[dict{name}]
         if not sp_artists:
             return 0
-        sp_tokens = Tidal._token_set(sp_artists)
+        if isinstance(sp_artists, list):
+            try:
+                names = [
+                    (a if isinstance(a, str) else a.get("name", "")) for a in sp_artists
+                ]
+                sp_joined = ", ".join([n for n in names if n])
+            except Exception:
+                sp_joined = ""
+        else:
+            sp_joined = sp_artists
+        sp_tokens = Tidal._token_set(sp_joined)
         td_names = ", ".join(getattr(a, "name", "") for a in (td_artists_list or []))
         td_tokens = Tidal._token_set(td_names)
         if not td_tokens:
@@ -400,19 +450,15 @@ class Tidal:
         *,
         isrc: Optional[str],
         name: str,
-        artist: Optional[str],
+        artists: Optional[list | str],
         duration_ms: Optional[int] = None,
         album: Optional[str] = None,
     ) -> Optional[tidalapi.media.Track]:
         self.logger.info(
-            f"Resolving best match for ISRC: {isrc}, name: {name}, artist: {artist}"
+            f"Resolving best match for ISRC: {isrc}, name: {name}, artists: {artists}"
         )
         # Use normalized forms for search queries; keep originals for scoring/display
         search_name = self._normalize_text(name)
-        search_artist = ", ".join(
-            a.strip() for a in (artist or "").split(",") if a.strip()
-        )
-        search_artist_norm = self._normalize_text(search_artist) if search_artist else None
         candidates: List[tidalapi.media.Track] = []
         if isrc:
             candidates = self.search_by_isrc(isrc)
@@ -421,16 +467,10 @@ class Tidal:
         if name_candidates:
             candidates.extend(name_candidates)
         # Always include name+artist candidates when artist is available
-        if search_artist_norm:
-            name_artist_candidates = self.search_by_name_artist(search_name, search_artist_norm)
+        if artists:
+            name_artist_candidates = self.search_by_name_artist(search_name, artists)
             if name_artist_candidates:
                 candidates.extend(name_artist_candidates)
-        # Additional fallbacks: try each individual artist with the title
-        if not candidates and search_artist_norm:
-            for part in [a.strip() for a in search_artist_norm.split(",") if a.strip()]:
-                more = self.search_by_name_artist(search_name, part)
-                if more:
-                    candidates.extend(more)
         # Try including album keyword to disambiguate
         if not candidates and album:
             more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
@@ -462,7 +502,7 @@ class Tidal:
             c_name = getattr(c, "name", "") or getattr(c, "full_name", "")
             score = 0
             score += self._title_score(name, c_name)
-            a_score = self._artist_score(artist or "", getattr(c, "artists", []))
+            a_score = self._artist_score(artists or "", getattr(c, "artists", []))
             score += a_score
             score += self._duration_score(duration_ms, getattr(c, "duration", None))
             score += {3: 5, 2: 3, 1: 0}.get(self._quality_rank(c), 0)
