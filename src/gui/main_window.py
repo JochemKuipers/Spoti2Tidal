@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
 )
+from PyQt6.QtWidgets import QHeaderView
 from PyQt6.QtCore import Qt, QThreadPool
 import logging
 
@@ -197,7 +198,12 @@ class MainWindow(QMainWindow):
         self.xref_table.setAlternatingRowColors(True)
         self.xref_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.xref_table.setSortingEnabled(True)
-        self.xref_table.horizontalHeader().setStretchLastSection(True)
+        hh = self.xref_table.horizontalHeader()
+        hh.setStretchLastSection(False)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(self.xref_table)
 
         self.setCentralWidget(container)
@@ -232,7 +238,12 @@ class MainWindow(QMainWindow):
         self.sp_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Duration"])
         self.sp_tracks.setAlternatingRowColors(True)
         self.sp_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.sp_tracks.horizontalHeader().setStretchLastSection(True)
+        hh = self.sp_tracks.horizontalHeader()
+        hh.setStretchLastSection(False)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         splitter.addWidget(self.sp_list)
         splitter.addWidget(self.sp_tracks)
         splitter.setStretchFactor(0, 1)
@@ -252,7 +263,13 @@ class MainWindow(QMainWindow):
         self.td_tracks.setHorizontalHeaderLabels(["Name", "Artist", "Album", "Quality", "ID"])
         self.td_tracks.setAlternatingRowColors(True)
         self.td_tracks.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.td_tracks.horizontalHeader().setStretchLastSection(True)
+        hh = self.td_tracks.horizontalHeader()
+        hh.setStretchLastSection(False)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         splitter.addWidget(self.td_list)
         splitter.addWidget(self.td_tracks)
         splitter.setStretchFactor(0, 1)
