@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         bar = self.menuBar()
         acct = bar.addMenu("Account")
-        self.act_tidal_login = QAction("Connect TIDAL (PKCE)", self)
+        self.act_tidal_login = QAction("Connect TIDAL", self)
         self.act_tidal_login.triggered.connect(self._handle_tidal_login)
         acct.addAction(self.act_tidal_login)
 
@@ -609,6 +609,18 @@ class MainWindow(QMainWindow):
                     sp_item=it,
                 )
                 st.tracks.append(tstate)
+            
+            # Build the view if this is the currently selected playlist
+            if self.playlist_list.currentRow() >= 0:
+                current_pid = None
+                current_item = self.playlist_list.currentItem()
+                for k, pst in self.playlists.items():
+                    if pst.list_item is current_item:
+                        current_pid = k
+                        break
+                
+                if current_pid == playlist_id and not st.widgets_built:
+                    self._build_track_view_for_playlist(playlist_id, st)
             
             st.progress_bar.setFormat("Matching tracks… %p%")
             # Start matching immediately without building widgets
