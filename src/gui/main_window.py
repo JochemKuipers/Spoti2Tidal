@@ -765,6 +765,7 @@ class MainWindow(QMainWindow):
     def _start_matching_for_playlist(self, playlist_id: str, st: PlaylistState):
         """Start matching all tracks for a playlist after widgets are built."""
         st.progress_bar.setFormat("Matching tracks… %p%")
+        st.progress_bar.setValue(0)  # Reset to 0 before starting matching
         # Begin matching concurrently
         for tstate in st.tracks:
             self._match_track_async(playlist_id, tstate)
