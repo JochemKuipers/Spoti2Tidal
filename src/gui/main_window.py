@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
         self.fetch_pool = QThreadPool()
         self.fetch_pool.setMaxThreadCount(2)  # Sequential-ish fetching to avoid rate limits
         self.match_pool = QThreadPool()
-        self.match_pool.setMaxThreadCount(10)  # More threads for parallel track matching (TIDAL API is sequential anyway)
+        self.match_pool.setMaxThreadCount(6)  # Sequential matching to avoid TIDAL rate limits
         # For backwards compatibility, keep self.pool pointing to match pool
         self.pool = self.match_pool
 

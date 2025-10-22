@@ -14,6 +14,11 @@ from threading import Lock
 DEFAULT_SESSION_DIR = Path(user_config_dir("Spoti2Tidal"))
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "tidal_session.json"
 
+# Global lock to ensure all TIDAL API calls are sequential across all instances
+_TIDAL_API_LOCK = Lock()
+# Minimum delay between API calls (in seconds)
+_TIDAL_API_DELAY = 0.3
+
 
 class TidalTrackFetchWorker(QThread):
     """Worker thread for fetching a batch of tracks at a specific offset"""
@@ -143,7 +148,9 @@ class Tidal:
     ) -> List[tidalapi.playlist.UserPlaylist]:
         self.logger.info("Fetching TIDAL user playlists")
         try:
-            playlists = self.session.user.playlists()
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                playlists = self.session.user.playlists()
         except Exception:
             playlists = []
         if progress_callback:
@@ -156,14 +163,18 @@ class Tidal:
         self.logger.info("Fetching TIDAL user tracks")
         tracks = []
         try:
-            total = self.session.user.favorites.get_tracks_count()
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                total = self.session.user.favorites.get_tracks_count()
         except Exception:
             self.logger.exception("Failed to fetch TIDAL user favorites count")
             total = 0
 
         offset = 0
         while True:
-            page = self.session.user.favorites.tracks(limit=page_limit, offset=offset)
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                page = self.session.user.favorites.tracks(limit=page_limit, offset=offset)
             if not page:
                 break
             tracks.extend(page)
@@ -180,22 +191,30 @@ class Tidal:
 
     def get_playlist(self, playlist_id) -> tidalapi.playlist.UserPlaylist:
         self.logger.info(f"Fetching TIDAL playlist {playlist_id}")
-        return self.session.playlist(playlist_id)
+        with _TIDAL_API_LOCK:
+            time.sleep(_TIDAL_API_DELAY)
+            return self.session.playlist(playlist_id)
 
     def get_playlist_tracks(
         self, playlist_id, progress_callback=None, page_limit: int = 100
     ) -> List[tidalapi.media.Track]:
         self.logger.info(f"Fetching TIDAL playlist tracks {playlist_id}")
-        playlist = self.session.playlist(playlist_id)
+        with _TIDAL_API_LOCK:
+            time.sleep(_TIDAL_API_DELAY)
+            playlist = self.session.playlist(playlist_id)
         tracks = []
         try:
-            total = playlist.get_tracks_count()
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                total = playlist.get_tracks_count()
         except Exception:
             total = 0
 
         offset = 0
         while True:
-            page = playlist.tracks(limit=page_limit, offset=offset)
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                page = playlist.tracks(limit=page_limit, offset=offset)
             if not page:
                 break
             tracks.extend(page)
@@ -212,17 +231,25 @@ class Tidal:
 
     def get_track(self, track_id) -> tidalapi.media.Track:
         self.logger.info(f"Fetching TIDAL track {track_id}")
-        return self.session.track(track_id)
+        with _TIDAL_API_LOCK:
+            time.sleep(_TIDAL_API_DELAY)
+            return self.session.track(track_id)
 
     # ---- search & matching helpers ----
     def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
-        self.logger.debug(f"Searchi]ng TIDAL for tracks: {query}")
+        self.logger.debug(f"Searching TIDAL for tracks: {query}")
         
         max_retries = 3
+        delay = 0.5  # Increased from 0.1 to 0.5 seconds
 
         for attempt in range(1, max_retries + 1):
             try:
-                results = self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
+                # Use global lock to ensure all API calls are sequential
+                with _TIDAL_API_LOCK:
+                    # Add delay before each API call
+                    time.sleep(_TIDAL_API_DELAY)
+                    results = self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
+                
                 # Normalize shape
                 if isinstance(results, list):
                     tracks = results
@@ -237,8 +264,8 @@ class Tidal:
                 msg = str(e).lower()
                 if "429" in msg or "too many" in msg or "rate" in msg:
                     self.logger.warning(f"TIDAL rate limited (attempt {attempt}/{max_retries}); backing off…")
-                    time.sleep(delay + random.uniform(0, 0.25))
-                    delay = min(8.0, delay * 2)
+                    time.sleep(delay + random.uniform(0, 0.5))
+                    delay = min(10.0, delay * 2)
                     continue
                 # Other errors: log and break
                 self.logger.exception("TIDAL search failed")
@@ -529,7 +556,9 @@ class Tidal:
     ) -> Optional[tidalapi.playlist.UserPlaylist]:
         self.logger.info(f"Creating TIDAL playlist: {name}")
         try:
-            return self.session.user.create_playlist(title=name, description=description)
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                return self.session.user.create_playlist(title=name, description=description)
         except Exception as e:
             self.logger.exception(f"Failed to create TIDAL playlist {name}: {e}")
             return None
@@ -539,14 +568,18 @@ class Tidal:
             f"Adding {len(track_ids)} tracks to TIDAL playlist {playlist_id}"
         )
         try:
-            playlist = self.session.playlist(playlist_id)
+            with _TIDAL_API_LOCK:
+                time.sleep(_TIDAL_API_DELAY)
+                playlist = self.session.playlist(playlist_id)
             if not track_ids:
                 return True
             # TIDAL API supports adding in batches
             batch_size = 50
             for i in range(0, len(track_ids), batch_size):
                 batch = track_ids[i : i + batch_size]
-                playlist.add(batch)
+                with _TIDAL_API_LOCK:
+                    time.sleep(_TIDAL_API_DELAY)
+                    playlist.add(batch)
             return True
         except Exception as e:
             self.logger.exception(f"Failed to add tracks to TIDAL playlist: {e}")
