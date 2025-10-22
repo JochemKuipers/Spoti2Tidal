@@ -381,7 +381,7 @@ class Tidal:
         try:
             # Only strip feat/with patterns, don't remove content in parentheses/brackets unconditionally
             text = re.sub(
-                r"\s*[\[(]\s*(feat\.?|with\.?)\s.*?[\])]", "", text, flags=re.IGNORECASE
+                r"\s*[\[(]\s*(feat\.?|with\.?)\s.*?[])]", "", text, flags=re.IGNORECASE
             ).strip()
             text = re.sub(
                 r"\s+(feat\.?|with\.?)\s.*$", "", text, flags=re.IGNORECASE
