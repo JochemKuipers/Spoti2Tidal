@@ -9,7 +9,7 @@ import re
 import time
 import os
 import random
-from threading import Semaphore
+from threading import Lock
 
 DEFAULT_SESSION_DIR = Path(user_config_dir("Spoti2Tidal"))
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "tidal_session.json"
@@ -67,22 +67,6 @@ class Tidal:
         self.session_file = Path(session_file) if session_file else DEFAULT_SESSION_FILE
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Simple rate limiting primitives to avoid HTTP 429
-        try:
-            max_conc = int(os.getenv("TIDAL_MAX_CONCURRENCY", "5"))
-        except Exception:
-            max_conc = 5
-        try:
-            self._per_request_delay = float(os.getenv("TIDAL_REQUEST_DELAY_SEC", "0.15"))
-        except Exception:
-            self._per_request_delay = 0.15
-        try:
-            self._max_retries = int(os.getenv("TIDAL_MAX_RETRIES", "4"))
-        except Exception:
-            self._max_retries = 4
-        self._search_sem = Semaphore(max(1, max_conc))
-
-        # Try to load an existing session; if invalid, stay unauthenticated until user completes PKCE
         self._load_session_silent()
 
     def _load_session_silent(self) -> bool:
@@ -232,42 +216,34 @@ class Tidal:
 
     # ---- search & matching helpers ----
     def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
-        self.logger.debug(f"Searching TIDAL for tracks: {query}")
-        # Rate-limited call with retries/backoff
-        def _call():
-            # Don't sleep here - the semaphore already limits concurrency
-            # Only sleep when retrying after rate limit errors
-            return self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
+        self.logger.debug(f"Searchi]ng TIDAL for tracks: {query}")
+        
+        max_retries = 3
 
-        # Acquire concurrency slot
-        self._search_sem.acquire()
-        try:
-            delay = 0.5
-            for attempt in range(1, self._max_retries + 1):
-                try:
-                    results = _call()
-                    # Normalize shape
-                    if isinstance(results, list):
-                        tracks = results
-                    elif isinstance(results, dict) and "tracks" in results:
-                        tracks = results.get("tracks") or []
-                    else:
-                        tracks = getattr(results, "tracks", []) or []
-                    self.logger.debug(f"Found {len(tracks)} TIDAL tracks for search: {query}")
-                    return tracks
-                except Exception as e:
-                    # Heuristic: if it's a 429 or rate-related, back off and retry
-                    msg = str(e).lower()
-                    if "429" in msg or "too many" in msg or "rate" in msg:
-                        self.logger.warning(f"TIDAL rate limited (attempt {attempt}/{self._max_retries}); backing off…")
-                        time.sleep(delay + random.uniform(0, 0.25))
-                        delay = min(8.0, delay * 2)
-                        continue
-                    # Other errors: log and break
-                    self.logger.exception("TIDAL search failed")
-                    break
-        finally:
-            self._search_sem.release()
+        for attempt in range(1, max_retries + 1):
+            try:
+                results = self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
+                # Normalize shape
+                if isinstance(results, list):
+                    tracks = results
+                elif isinstance(results, dict) and "tracks" in results:
+                    tracks = results.get("tracks") or []
+                else:
+                    tracks = getattr(results, "tracks", []) or []
+                self.logger.debug(f"Found {len(tracks)} TIDAL tracks for search: {query}")
+                return tracks
+            except Exception as e:
+                # Heuristic: if it's a 429 or rate-related, back off and retry
+                msg = str(e).lower()
+                if "429" in msg or "too many" in msg or "rate" in msg:
+                    self.logger.warning(f"TIDAL rate limited (attempt {attempt}/{max_retries}); backing off…")
+                    time.sleep(delay + random.uniform(0, 0.25))
+                    delay = min(8.0, delay * 2)
+                    continue
+                # Other errors: log and break
+                self.logger.exception("TIDAL search failed")
+                break
+        
         return []
 
     def search_by_isrc(self, isrc: str) -> List[tidalapi.media.Track]:
