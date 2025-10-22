@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -36,11 +36,12 @@ from src.services.tidal import Tidal
 class TrackState:
     index: int
     sp_item: dict  # Spotify API track item dict
-    widget: QWidget
-    progress_bar: QProgressBar
-    tidal_label: QLabel
-    status_label: QLabel
+    widget: Optional[QWidget] = None
+    progress_bar: Optional[QProgressBar] = None
+    tidal_label: Optional[QLabel] = None
+    status_label: Optional[QLabel] = None
     matched_track_id: Optional[int] = None
+    matched_track_label: Optional[str] = None  # Store the formatted label for matched tracks
     progress: int = 0
 
 
@@ -55,6 +56,8 @@ class PlaylistState:
     tracks_area: QWidget  # child container where track widgets are added
     tracks_layout: QVBoxLayout
     tracks: List[TrackState] = field(default_factory=list)
+    tracks_raw_items: List[dict] = field(default_factory=list)  # Store raw items for lazy widget creation
+    widgets_built: bool = False  # Track if widgets have been built
     started: bool = False
     completed: bool = False
     tidal_playlist_id: Optional[str] = None
@@ -137,14 +140,13 @@ class MainWindow(QMainWindow):
         self.spotify = Spotify()
         self.tidal = Tidal()
 
-        # worker pool
-        self.pool = QThreadPool.globalInstance()
-        # Allow parallel track matching
-        try:
-            # Keep modest concurrency to avoid API rate limits
-            self.pool.setMaxThreadCount(6)
-        except Exception:
-            pass
+        # worker pools: separate pools to avoid fetch tasks blocking on match tasks
+        self.fetch_pool = QThreadPool()
+        self.fetch_pool.setMaxThreadCount(2)  # Sequential-ish fetching to avoid rate limits
+        self.match_pool = QThreadPool()
+        self.match_pool.setMaxThreadCount(6)  # Allow parallel track matching
+        # For backwards compatibility, keep self.pool pointing to match pool
+        self.pool = self.match_pool
 
         # UI
         self._build_menu()
@@ -152,6 +154,9 @@ class MainWindow(QMainWindow):
 
         # state
         self.playlists: Dict[str, PlaylistState] = {}
+        # processing queue state (internal, UI-independent)
+        self.processing_queue: List[str] = []
+        self.currently_processing_id: Optional[str] = None
 
         # kick off
         self._load_spotify_playlists()
@@ -246,6 +251,7 @@ class MainWindow(QMainWindow):
             if not items:
                 QMessageBox.information(self, "Spotify", "No playlists found or not authenticated.")
                 return
+            order_ids: List[str] = []
             for pl in items:
                 pid = pl.get("id")
                 name = pl.get("name") or pid
@@ -287,12 +293,19 @@ class MainWindow(QMainWindow):
                     tracks_area=tracks_area,
                     tracks_layout=tracks_layout,
                 )
+                # Initialize progress bar format
+                widget.progress.setFormat("Ready")
+                widget.progress.setValue(0)
+                order_ids.append(pid)
                 # Connect button now that state exists
                 btn_sync.clicked.connect(functools.partial(self._transfer_to_tidal, pid))
 
             # Select first by default
             if self.playlist_list.count() > 0:
                 self.playlist_list.setCurrentRow(0)
+            # Enqueue playlists for processing and start the first automatically
+            if order_ids:
+                self._enqueue_playlists(order_ids)
 
         def on_error(e: Exception):
             QMessageBox.critical(self, "Spotify", f"Failed to load playlists: {e}")
@@ -306,7 +319,7 @@ class MainWindow(QMainWindow):
             return self.spotify.get_user_playlists(progress_callback=progress_callback)
 
         run_in_background(
-            self.pool,
+            self.fetch_pool,
             fetch_playlists,
             on_done=on_done,
             on_error=on_error,
@@ -331,6 +344,11 @@ class MainWindow(QMainWindow):
         if not pid:
             return
 
+        # Build widgets for this playlist if not already built
+        st = self.playlists[pid]
+        if not st.widgets_built and st.tracks_raw_items:
+            self._build_track_widgets_for_playlist(pid, st)
+
         # swap in this playlist container
         # clear right_layout and insert this container
         while self.right_layout.count():
@@ -340,42 +358,31 @@ class MainWindow(QMainWindow):
                 w.setParent(None)
         self.right_layout.addWidget(self.playlists[pid].container, 1)
 
-        # kick off sync if not started
-        if not self.playlists[pid].started:
-            self._start_playlist_sync(pid)
+        # Do not auto-start on selection; processing is driven by internal queue now.
 
     # ---- per-playlist flow ----
     def _start_playlist_sync(self, playlist_id: str):
         st = self.playlists[playlist_id]
         st.started = True
+        st.progress_bar.setValue(0)
         st.progress_bar.setFormat("Fetching tracks… %p%")
 
         def on_tracks_done(items: List[dict]):
-            # Build track widgets
+            # Store raw track data without building widgets
+            # Widgets will be built lazily when user views the playlist
+            st.tracks_raw_items = items
+            
+            # Create TrackState objects without widgets
             for idx, it in enumerate(items):
-                track = it.get("track") or {}
-                name = track.get("name", "<unknown>")
-                artists = ", ".join(a.get("name") for a in (track.get("artists") or []) if a)
-                album = (track.get("album") or {}).get("name", "")
-                dur_ms = track.get("duration_ms") or 0
-                dur_txt = self._fmt_duration(dur_ms)
-
-                tw = TrackItemWidget(name, artists, album, dur_txt)
-                st.tracks_layout.addWidget(tw)
                 tstate = TrackState(
                     index=idx,
                     sp_item=it,
-                    widget=tw,
-                    progress_bar=tw.progress,
-                    tidal_label=tw.td_label,
-                    status_label=tw.status,
                 )
                 st.tracks.append(tstate)
-
+            
             st.progress_bar.setFormat("Matching tracks… %p%")
-            # Begin matching concurrently
-            for tstate in st.tracks:
-                self._match_track_async(playlist_id, tstate)
+            # Start matching immediately without building widgets
+            self._start_matching_for_playlist(playlist_id, st)
 
         def on_tracks_progress(pct: int):
             # during fetch, reflect percent
@@ -384,9 +391,14 @@ class MainWindow(QMainWindow):
         def on_tracks_error(e: Exception):
             QMessageBox.critical(self, "Spotify", f"Failed to fetch tracks: {e}")
             st.started = False
+            # On fetch error, continue pipeline with next playlist to avoid stalling.
+            try:
+                self._start_next_in_queue()
+            except Exception:
+                pass
 
         run_in_background(
-            self.pool,
+            self.fetch_pool,
             functools.partial(self.spotify.get_playlist_tracks, playlist_id),
             on_done=on_tracks_done,
             on_error=on_tracks_error,
@@ -453,7 +465,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Transfer", f"Error: {e}")
 
         run_in_background(
-            self.pool,
+            self.fetch_pool,
             do_transfer,
             on_done=on_done,
             on_error=on_error,
@@ -472,18 +484,121 @@ class MainWindow(QMainWindow):
         if done == total and not st.completed:
             st.progress_bar.setFormat("Completed 100%")
             st.completed = True
-            # Move to next playlist automatically
-            self._move_to_next_playlist()
+            # Advance queue instead of relying on UI selection
+            self._on_playlist_complete(playlist_id)
 
-    def _move_to_next_playlist(self):
-        """Move to the next playlist in the list after current one completes."""
-        current_row = self.playlist_list.currentRow()
-        total_rows = self.playlist_list.count()
+    def _show_playlist_container(self, pid: str):
+        # clear right_layout and insert this container
+        while self.right_layout.count():
+            item = self.right_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        self.right_layout.addWidget(self.playlists[pid].container, 1)
+
+    def _enqueue_playlists(self, ids: List[str]):
+        # Initialize processing queue in given order
+        self.processing_queue = [pid for pid in ids if pid in self.playlists]
+        self.currently_processing_id = None
+        self._start_next_in_queue()
+
+    def _start_next_in_queue(self):
+        # pick next not-started playlist
+        next_id: Optional[str] = None
+        while self.processing_queue:
+            cand = self.processing_queue.pop(0)
+            st = self.playlists.get(cand)
+            if st and not st.started:
+                next_id = cand
+                break
+        if not next_id:
+            return
+        self.currently_processing_id = next_id
+        # Don't force-focus the UI to this playlist - let it fetch in background
+        # Users can manually select playlists to see their progress
+        # start sync
+        if not self.playlists[next_id].started:
+            self._start_playlist_sync(next_id)
+
+    def _start_matching_for_playlist(self, playlist_id: str, st: PlaylistState):
+        """Start matching all tracks for a playlist after widgets are built."""
+        st.progress_bar.setFormat("Matching tracks… %p%")
+        # Begin matching concurrently
+        for tstate in st.tracks:
+            self._match_track_async(playlist_id, tstate)
+        # Pipeline: as soon as this playlist finished fetching, start fetching the next one
+        # while this one is still matching.
+        try:
+            self._start_next_in_queue()
+        except Exception:
+            pass
+
+    def _build_track_widgets_for_playlist(self, playlist_id: str, st: PlaylistState):
+        """Build track widgets in batches to keep UI responsive."""
+        if st.widgets_built:
+            return
         
-        # If there's a next playlist, select it
-        if current_row < total_rows - 1:
-            next_row = current_row + 1
-            self.playlist_list.setCurrentRow(next_row)
+        batch_size = 30
+        total_items = len(st.tracks_raw_items)
+        
+        def build_batch(start_idx: int):
+            end_idx = min(start_idx + batch_size, total_items)
+            for idx in range(start_idx, end_idx):
+                it = st.tracks_raw_items[idx]
+                track = it.get("track") or {}
+                name = track.get("name", "<unknown>")
+                artists = ", ".join(a.get("name") for a in (track.get("artists") or []) if a)
+                album = (track.get("album") or {}).get("name", "")
+                dur_ms = track.get("duration_ms") or 0
+                dur_txt = self._fmt_duration(dur_ms)
+
+                tw = TrackItemWidget(name, artists, album, dur_txt)
+                st.tracks_layout.addWidget(tw)
+                
+                # Update the existing TrackState with widget references
+                tstate = st.tracks[idx]
+                tstate.widget = tw
+                tstate.progress_bar = tw.progress
+                tstate.tidal_label = tw.td_label
+                tstate.status_label = tw.status
+                
+                # Update widget to reflect current match progress/status
+                tstate.progress_bar.setValue(tstate.progress)
+                
+                if tstate.progress >= 100:
+                    if tstate.matched_track_id and tstate.matched_track_label:
+                        # Track was already matched - display the stored label
+                        tstate.status_label.setText("Matched")
+                        tstate.tidal_label.setText(tstate.matched_track_label)
+                        tstate.tidal_label.setStyleSheet("")
+                    elif tstate.matched_track_id:
+                        # Matched but no label stored (shouldn't happen, but handle gracefully)
+                        tstate.status_label.setText("Matched")
+                        tstate.tidal_label.setText("Matched")
+                        tstate.tidal_label.setStyleSheet("")
+                    else:
+                        tstate.status_label.setText("No match")
+                        tstate.tidal_label.setText("No match found")
+                        tstate.tidal_label.setStyleSheet("color: #b00;")
+                elif tstate.progress > 0:
+                    tstate.status_label.setText(f"Matching… {tstate.progress}%")
+                else:
+                    tstate.status_label.setText("Queued")
+            
+            # If more batches remain, schedule next batch
+            if end_idx < total_items:
+                QTimer.singleShot(5, lambda: build_batch(end_idx))
+            else:
+                st.widgets_built = True
+        
+        # Start building the first batch
+        build_batch(0)
+
+    def _on_playlist_complete(self, playlist_id: str):
+        # mark current processing finished; do not trigger next fetch here because
+        # we already pipeline the next fetch right after fetching completes.
+        if self.currently_processing_id == playlist_id:
+            self.currently_processing_id = None
 
     # ---- per-track matching ----
     def _match_track_async(self, playlist_id: str, tstate: TrackState):
@@ -533,32 +648,46 @@ class MainWindow(QMainWindow):
 
         def on_done(res: Tuple[Optional[int], Optional[str]]):
             tid, label = res
+            # Update internal state
+            tstate.progress = 100
             if tid is None:
-                tstate.tidal_label.setText("No match found")
-                tstate.tidal_label.setStyleSheet("color: #b00;")
-                tstate.status_label.setText("No match")
+                # No match found
+                tstate.matched_track_label = None
             else:
                 tstate.matched_track_id = tid
-                tstate.tidal_label.setText(label or "Matched")
-                tstate.tidal_label.setStyleSheet("")
-                tstate.status_label.setText("Matched")
-            tstate.progress = 100
-            tstate.progress_bar.setValue(100)
+                tstate.matched_track_label = label  # Store the label for later display
+            
+            # Update widgets only if they exist
+            if tstate.tidal_label is not None:
+                if tid is None:
+                    tstate.tidal_label.setText("No match found")
+                    tstate.tidal_label.setStyleSheet("color: #b00;")
+                    tstate.status_label.setText("No match")
+                else:
+                    tstate.tidal_label.setText(label or "Matched")
+                    tstate.tidal_label.setStyleSheet("")
+                    tstate.status_label.setText("Matched")
+                tstate.progress_bar.setValue(100)
+            
             self._update_playlist_progress(playlist_id)
 
         def on_progress(pct: int):
             tstate.progress = pct
-            tstate.progress_bar.setValue(pct)
-            if pct < 100:
-                tstate.status_label.setText(f"Matching… {pct}%")
+            # Update widgets only if they exist
+            if tstate.progress_bar is not None:
+                tstate.progress_bar.setValue(pct)
+                if pct < 100 and tstate.status_label is not None:
+                    tstate.status_label.setText(f"Matching… {pct}%")
             self._update_playlist_progress(playlist_id)
 
         def on_error(e: Exception):
-            tstate.tidal_label.setText(f"Error: {e}")
-            tstate.tidal_label.setStyleSheet("color: #b00;")
-            tstate.status_label.setText("Error")
             tstate.progress = 100
-            tstate.progress_bar.setValue(100)
+            # Update widgets only if they exist
+            if tstate.tidal_label is not None:
+                tstate.tidal_label.setText(f"Error: {e}")
+                tstate.tidal_label.setStyleSheet("color: #b00;")
+                tstate.status_label.setText("Error")
+                tstate.progress_bar.setValue(100)
             self._update_playlist_progress(playlist_id)
 
         run_in_background(

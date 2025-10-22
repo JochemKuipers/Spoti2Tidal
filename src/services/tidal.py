@@ -232,12 +232,11 @@ class Tidal:
 
     # ---- search & matching helpers ----
     def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
-        self.logger.info(f"Searching TIDAL for tracks: {query}")
+        self.logger.debug(f"Searching TIDAL for tracks: {query}")
         # Rate-limited call with retries/backoff
         def _call():
-            # Gentle pacing between calls to avoid bursts
-            if self._per_request_delay > 0:
-                time.sleep(self._per_request_delay)
+            # Don't sleep here - the semaphore already limits concurrency
+            # Only sleep when retrying after rate limit errors
             return self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
 
         # Acquire concurrency slot
@@ -254,7 +253,7 @@ class Tidal:
                         tracks = results.get("tracks") or []
                     else:
                         tracks = getattr(results, "tracks", []) or []
-                    self.logger.info(f"Found {len(tracks)} TIDAL tracks for search: {query}")
+                    self.logger.debug(f"Found {len(tracks)} TIDAL tracks for search: {query}")
                     return tracks
                 except Exception as e:
                     # Heuristic: if it's a 429 or rate-related, back off and retry
@@ -272,28 +271,28 @@ class Tidal:
         return []
 
     def search_by_isrc(self, isrc: str) -> List[tidalapi.media.Track]:
-        self.logger.info(f"Searching TIDAL for tracks by ISRC: {isrc}")
+        self.logger.debug(f"Searching TIDAL for tracks by ISRC: {isrc}")
         if not isrc:
             return []
         # TIDAL search supports fielded queries for ISRC
         candidates = self._search_tracks(f"isrc:{isrc}", limit=10)
         # Ensure exact ISRC match first
         exact = [t for t in candidates if getattr(t, "isrc", None) == isrc]
-        self.logger.info(f"Found {len(exact)} exact TIDAL tracks for ISRC: {isrc}")
+        self.logger.debug(f"Found {len(exact)} exact TIDAL tracks for ISRC: {isrc}")
         return exact or candidates
 
     def search_by_name(self, name: str) -> List[tidalapi.media.Track]:
-        self.logger.info(f"Searching TIDAL for tracks by name: {name}")
+        self.logger.debug(f"Searching TIDAL for tracks by name: {name}")
         if not name:
             return []
         tracks = self._search_tracks(name, limit=25)
-        self.logger.info(f"Found {len(tracks)} TIDAL tracks for name: {name}")
+        self.logger.debug(f"Found {len(tracks)} TIDAL tracks for name: {name}")
         return tracks
 
     def search_by_name_artist(
         self, name: str, artists: list | str
     ) -> List[tidalapi.media.Track]:
-        self.logger.info(
+        self.logger.debug(
             f"Searching TIDAL for tracks by name and artist(s): {name} | {artists}"
         )
         if not name:
@@ -336,7 +335,7 @@ class Tidal:
                 seen_ids.add(tid)
                 all_results.append(t)
 
-        self.logger.info(
+        self.logger.debug(
             f"Found {len(all_results)} TIDAL tracks across progressive artist queries for: {name} | {artists}"
         )
         return all_results
@@ -465,12 +464,14 @@ class Tidal:
         duration_ms: Optional[int] = None,
         album: Optional[str] = None,
     ) -> Optional[tidalapi.media.Track]:
-        self.logger.info(
+        self.logger.debug(
             f"Resolving best match for ISRC: {isrc}, name: {name}, artists: {artists}"
         )
         # Use normalized forms for search queries; keep originals for scoring/display
         search_name = self._normalize_text(name)
         candidates: List[tidalapi.media.Track] = []
+        
+        # Gather all candidates from multiple search strategies for best quality selection
         if isrc:
             candidates = self.search_by_isrc(isrc)
         # Always include name-based candidates
@@ -487,6 +488,7 @@ class Tidal:
             more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
             if more:
                 candidates.extend(more)
+        
         # de-duplicate by id
         seen = set()
         uniq = []
