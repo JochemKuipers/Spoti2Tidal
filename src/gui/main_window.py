@@ -5,8 +5,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QThreadPool, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QThreadPool, QTimer, QAbstractListModel, QModelIndex, QSize
+from PyQt6.QtGui import QAction, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -16,14 +16,18 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QListView,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
+    QStyle,
 )
 
 from src.gui.workers import run_in_background
@@ -36,10 +40,6 @@ from src.services.tidal import Tidal
 class TrackState:
     index: int
     sp_item: dict  # Spotify API track item dict
-    widget: Optional[QWidget] = None
-    progress_bar: Optional[QProgressBar] = None
-    tidal_label: Optional[QLabel] = None
-    status_label: Optional[QLabel] = None
     matched_track_id: Optional[int] = None
     matched_track_label: Optional[str] = None  # Store the formatted label for matched tracks
     progress: int = 0
@@ -53,14 +53,244 @@ class PlaylistState:
     name_label: QLabel
     progress_bar: QProgressBar
     container: QWidget  # right panel content container for this playlist
-    tracks_area: QWidget  # child container where track widgets are added
-    tracks_layout: QVBoxLayout
+    tracks_view: Optional[QListView] = None  # Virtualized track list view
+    tracks_model: Optional['TrackListModel'] = None  # Model for tracks
     tracks: List[TrackState] = field(default_factory=list)
     tracks_raw_items: List[dict] = field(default_factory=list)  # Store raw items for lazy widget creation
     widgets_built: bool = False  # Track if widgets have been built
     started: bool = False
     completed: bool = False
     tidal_playlist_id: Optional[str] = None
+
+
+# ---- Virtualized Track List (Model + Delegate) ----
+class TrackListModel(QAbstractListModel):
+    """Model for track list - only stores data, doesn't create widgets."""
+    
+    def __init__(self, tracks: List[TrackState], parent=None):
+        super().__init__(parent)
+        self._tracks = tracks
+    
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return len(self._tracks)
+    
+    def data(self, index: QModelIndex, role: int):
+        if not index.isValid() or index.row() >= len(self._tracks):
+            return None
+        
+        if role == Qt.ItemDataRole.UserRole:
+            # Return the full TrackState object
+            return self._tracks[index.row()]
+        
+        return None
+    
+    def update_track(self, row: int):
+        """Notify view that a specific track has changed."""
+        if 0 <= row < len(self._tracks):
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.UserRole])
+
+
+class TrackItemDelegate(QStyledItemDelegate):
+    """Custom delegate to paint track items efficiently without creating widgets."""
+    
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        painter.save()
+        
+        tstate: TrackState = index.data(Qt.ItemDataRole.UserRole)
+        if not tstate:
+            painter.restore()
+            return
+        
+        rect = option.rect
+        
+        # Get palette colors for dark mode support
+        palette = option.palette
+        is_selected = option.state & QStyle.StateFlag.State_Selected
+        
+        # Draw background
+        if is_selected:
+            painter.fillRect(rect, palette.highlight())
+            text_color = palette.highlightedText().color()
+        else:
+            painter.fillRect(rect, palette.base())
+            text_color = palette.text().color()
+        
+        # Draw border with appropriate color
+        border_color = palette.mid().color()
+        painter.setPen(QPen(border_color, 1))
+        painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
+        
+        # Extract track data
+        sp_track = tstate.sp_item.get("track") or {}
+        name = sp_track.get("name", "<unknown>")
+        artists = ", ".join(a.get("name") for a in (sp_track.get("artists") or []) if a)
+        album = (sp_track.get("album") or {}).get("name", "")
+        dur_ms = sp_track.get("duration_ms") or 0
+        dur_txt = self._fmt_duration(dur_ms)
+        
+        # Layout areas
+        margin = 10
+        content_rect = rect.adjusted(margin, margin, -margin, -margin)
+        
+        # Progress bar area (top)
+        progress_height = 20
+        progress_rect = content_rect.adjusted(0, 0, 0, -(content_rect.height() - progress_height))
+        
+        # Draw progress bar with palette colors
+        progress_bg_color = palette.alternateBase().color()
+        painter.setPen(QPen(border_color, 1))
+        painter.setBrush(progress_bg_color)
+        painter.drawRect(progress_rect)
+        
+        if tstate.progress > 0:
+            fill_width = int(progress_rect.width() * tstate.progress / 100)
+            painter.fillRect(progress_rect.adjusted(0, 0, -(progress_rect.width() - fill_width), 0), 
+                           QColor("#4a9eff"))
+        
+        # Progress text
+        painter.setPen(text_color)
+        painter.drawText(progress_rect, Qt.AlignmentFlag.AlignCenter, f"{tstate.progress}%")
+        
+        # Status text (right side of progress)
+        status_text = self._get_status_text(tstate)
+        status_rect = content_rect.adjusted(progress_rect.width() - 100, 0, 0, 
+                                           -(content_rect.height() - progress_height))
+        secondary_color = palette.placeholderText().color()
+        painter.setPen(secondary_color)
+        painter.drawText(status_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, 
+                        status_text)
+        
+        # Track info area (bottom half)
+        y_offset = margin + progress_height + 8
+        track_rect = rect.adjusted(margin, y_offset, -margin, -margin)
+        
+        # Split into Spotify (left) and TIDAL (right)
+        mid_x = track_rect.width() // 2
+        spotify_rect = track_rect.adjusted(0, 0, -mid_x - 5, 0)
+        tidal_rect = track_rect.adjusted(mid_x + 5, 0, 0, 0)
+        
+        # Draw Spotify info
+        painter.setPen(text_color)
+        font_bold = QFont()
+        font_bold.setBold(True)
+        font_bold.setPointSize(10)
+        painter.setFont(font_bold)
+        
+        y = spotify_rect.top()
+        painter.drawText(spotify_rect.adjusted(0, 0, 0, -(spotify_rect.height() - 20)), 
+                        Qt.AlignmentFlag.AlignLeft, "Spotify")
+        
+        font_normal = QFont()
+        font_normal.setPointSize(9)
+        painter.setFont(font_normal)
+        
+        y += 22
+        painter.drawText(spotify_rect.adjusted(0, y - spotify_rect.top(), 0, 0), 
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                        self._elide_text(name, spotify_rect.width(), painter.fontMetrics()))
+        y += 16
+        painter.setPen(secondary_color)
+        painter.drawText(spotify_rect.adjusted(0, y - spotify_rect.top(), 0, 0), 
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                        self._elide_text(artists, spotify_rect.width(), painter.fontMetrics()))
+        y += 16
+        painter.drawText(spotify_rect.adjusted(0, y - spotify_rect.top(), 0, 0), 
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                        self._elide_text(f"{album} • {dur_txt}", spotify_rect.width(), painter.fontMetrics()))
+        
+        # Draw TIDAL info
+        painter.setPen(text_color)
+        painter.setFont(font_bold)
+        painter.drawText(tidal_rect.adjusted(0, 0, 0, -(tidal_rect.height() - 20)), 
+                        Qt.AlignmentFlag.AlignLeft, "TIDAL")
+        
+        painter.setFont(font_normal)
+        tidal_text = self._get_tidal_text(tstate)
+        
+        # Check if it's a matched track with data (contains pipe delimiter)
+        if "|" in tidal_text:
+            # Parse: name|artists|album|duration
+            parts = tidal_text.split("|")
+            if len(parts) >= 4:
+                td_name, td_artists, td_album, td_duration = parts[0], parts[1], parts[2], parts[3]
+                
+                y = tidal_rect.top()
+                y += 22
+                
+                # Draw track name (normal color)
+                painter.setPen(text_color)
+                painter.drawText(tidal_rect.adjusted(0, y - tidal_rect.top(), 0, 0), 
+                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                                self._elide_text(td_name, tidal_rect.width(), painter.fontMetrics()))
+                y += 16
+                
+                # Draw artists (secondary color)
+                painter.setPen(secondary_color)
+                painter.drawText(tidal_rect.adjusted(0, y - tidal_rect.top(), 0, 0), 
+                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                                self._elide_text(td_artists, tidal_rect.width(), painter.fontMetrics()))
+                y += 16
+                
+                # Draw album + duration (secondary color)
+                painter.drawText(tidal_rect.adjusted(0, y - tidal_rect.top(), 0, 0), 
+                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, 
+                                self._elide_text(f"{td_album} • {td_duration}", tidal_rect.width(), painter.fontMetrics()))
+            else:
+                # Fallback if parsing fails
+                painter.setPen(text_color)
+                painter.drawText(tidal_rect.adjusted(0, 22, 0, 0), 
+                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, 
+                                tidal_text)
+        else:
+            # Plain text (Pending, No match, Error)
+            tidal_text_rect = tidal_rect.adjusted(0, 22, 0, 0)
+            if "No match" in tidal_text or "Error" in tidal_text:
+                tidal_color = QColor("#d33")
+            else:
+                tidal_color = secondary_color
+            painter.setPen(tidal_color)
+            painter.drawText(tidal_text_rect, 
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, 
+                            tidal_text)
+        
+        painter.restore()
+    
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        """Fixed height for each item - enables uniform item size optimization."""
+        return QSize(option.rect.width(), 140)
+    
+    def _fmt_duration(self, ms: int) -> str:
+        """Format duration in ms to M:SS."""
+        secs = ms // 1000
+        mins = secs // 60
+        secs = secs % 60
+        return f"{mins}:{secs:02d}"
+    
+    def _get_status_text(self, tstate: TrackState) -> str:
+        """Get status text for track."""
+        if tstate.progress >= 100:
+            if tstate.matched_track_id:
+                return "Matched"
+            else:
+                return "No match"
+        elif tstate.progress > 0:
+            return f"Matching…"
+        return "Queued"
+    
+    def _get_tidal_text(self, tstate: TrackState) -> str:
+        """Get TIDAL match text for track."""
+        if tstate.matched_track_label:
+            return tstate.matched_track_label
+        elif tstate.matched_track_id:
+            return "Matched"
+        elif tstate.progress >= 100:
+            return "No match found"
+        return "Pending…"
+    
+    def _elide_text(self, text: str, width: int, font_metrics) -> str:
+        """Elide text to fit width."""
+        return font_metrics.elidedText(text, Qt.TextElideMode.ElideRight, width)
 
 
 class PlaylistListItem(QWidget):
@@ -142,9 +372,9 @@ class MainWindow(QMainWindow):
 
         # worker pools: separate pools to avoid fetch tasks blocking on match tasks
         self.fetch_pool = QThreadPool()
-        self.fetch_pool.setMaxThreadCount(2)  # Sequential-ish fetching to avoid rate limits
+        self.fetch_pool.setMaxThreadCount(10)  # Sequential-ish fetching to avoid rate limits
         self.match_pool = QThreadPool()
-        self.match_pool.setMaxThreadCount(6)  # Sequential matching to avoid TIDAL rate limits
+        self.match_pool.setMaxThreadCount(10)  # Sequential matching to avoid TIDAL rate limits
         # For backwards compatibility, keep self.pool pointing to match pool
         self.pool = self.match_pool
 
@@ -276,12 +506,13 @@ class MainWindow(QMainWindow):
                 header_row.addWidget(btn_sync, 0)
                 c_layout.addLayout(header_row)
 
-                tracks_area = QWidget()
-                tracks_layout = QVBoxLayout(tracks_area)
-                tracks_layout.setContentsMargins(0, 0, 0, 0)
-                tracks_layout.setSpacing(8)
-                c_layout.addWidget(tracks_area)
-                c_layout.addStretch(1)
+                # Create virtualized track list view
+                tracks_view = QListView()
+                tracks_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+                tracks_view.setUniformItemSizes(True)  # Major optimization for scrolling
+                tracks_view.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+                tracks_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                c_layout.addWidget(tracks_view, 1)
 
                 self.playlists[pid] = PlaylistState(
                     playlist=pl,
@@ -290,8 +521,7 @@ class MainWindow(QMainWindow):
                     name_label=widget.name_label,
                     progress_bar=widget.progress,
                     container=container,
-                    tracks_area=tracks_area,
-                    tracks_layout=tracks_layout,
+                    tracks_view=tracks_view,
                 )
                 # Initialize progress bar format
                 widget.progress.setFormat("Ready")
@@ -344,10 +574,10 @@ class MainWindow(QMainWindow):
         if not pid:
             return
 
-        # Build widgets for this playlist if not already built
+        # Build model/view for this playlist if not already built
         st = self.playlists[pid]
-        if not st.widgets_built and st.tracks_raw_items:
-            self._build_track_widgets_for_playlist(pid, st)
+        if not st.widgets_built and st.tracks:
+            self._build_track_view_for_playlist(pid, st)
 
         # swap in this playlist container
         # clear right_layout and insert this container
@@ -533,66 +763,20 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _build_track_widgets_for_playlist(self, playlist_id: str, st: PlaylistState):
-        """Build track widgets in batches to keep UI responsive."""
-        if st.widgets_built:
+    def _build_track_view_for_playlist(self, playlist_id: str, st: PlaylistState):
+        """Build virtualized track view - instant, no widgets to create!"""
+        if st.widgets_built or not st.tracks_view:
             return
         
-        batch_size = 30
-        total_items = len(st.tracks_raw_items)
+        # Create model with track data
+        st.tracks_model = TrackListModel(st.tracks, st.tracks_view)
+        st.tracks_view.setModel(st.tracks_model)
         
-        def build_batch(start_idx: int):
-            end_idx = min(start_idx + batch_size, total_items)
-            for idx in range(start_idx, end_idx):
-                it = st.tracks_raw_items[idx]
-                track = it.get("track") or {}
-                name = track.get("name", "<unknown>")
-                artists = ", ".join(a.get("name") for a in (track.get("artists") or []) if a)
-                album = (track.get("album") or {}).get("name", "")
-                dur_ms = track.get("duration_ms") or 0
-                dur_txt = self._fmt_duration(dur_ms)
-
-                tw = TrackItemWidget(name, artists, album, dur_txt)
-                st.tracks_layout.addWidget(tw)
-                
-                # Update the existing TrackState with widget references
-                tstate = st.tracks[idx]
-                tstate.widget = tw
-                tstate.progress_bar = tw.progress
-                tstate.tidal_label = tw.td_label
-                tstate.status_label = tw.status
-                
-                # Update widget to reflect current match progress/status
-                tstate.progress_bar.setValue(tstate.progress)
-                
-                if tstate.progress >= 100:
-                    if tstate.matched_track_id and tstate.matched_track_label:
-                        # Track was already matched - display the stored label
-                        tstate.status_label.setText("Matched")
-                        tstate.tidal_label.setText(tstate.matched_track_label)
-                        tstate.tidal_label.setStyleSheet("")
-                    elif tstate.matched_track_id:
-                        # Matched but no label stored (shouldn't happen, but handle gracefully)
-                        tstate.status_label.setText("Matched")
-                        tstate.tidal_label.setText("Matched")
-                        tstate.tidal_label.setStyleSheet("")
-                    else:
-                        tstate.status_label.setText("No match")
-                        tstate.tidal_label.setText("No match found")
-                        tstate.tidal_label.setStyleSheet("color: #b00;")
-                elif tstate.progress > 0:
-                    tstate.status_label.setText(f"Matching… {tstate.progress}%")
-                else:
-                    tstate.status_label.setText("Queued")
-            
-            # If more batches remain, schedule next batch
-            if end_idx < total_items:
-                QTimer.singleShot(5, lambda: build_batch(end_idx))
-            else:
-                st.widgets_built = True
+        # Set custom delegate for painting
+        delegate = TrackItemDelegate(st.tracks_view)
+        st.tracks_view.setItemDelegate(delegate)
         
-        # Start building the first batch
-        build_batch(0)
+        st.widgets_built = True
 
     def _on_playlist_complete(self, playlist_id: str):
         # mark current processing finished; do not trigger next fetch here because
@@ -628,22 +812,17 @@ class MainWindow(QMainWindow):
             if best is None:
                 return None, None
             tid = getattr(best, "id", None)
-            # Build nice label
+            # Build label with plain text separated by delimiters
             td_name = getattr(best, "name", "") or getattr(best, "full_name", "")
             td_artists = ", ".join(getattr(a, "name", "") for a in getattr(best, "artists", []) if a)
             td_album = getattr(getattr(best, "album", None), "name", "")
-            # Format like Spotify group: bold title + lines for artists, album, duration
             try:
                 dur_s = int(getattr(best, "duration", 0) or 0)
             except Exception:
                 dur_s = 0
             dur_txt = MainWindow._fmt_duration(dur_s * 1000)
-            label = (
-                f"<b>{td_name}</b><br>"
-                f"{td_artists}<br>"
-                f"{td_album}<br>"
-                f"{dur_txt}"
-            )
+            # Use pipe delimiter to separate fields: name|artists|album|duration
+            label = f"{td_name}|{td_artists}|{td_album}|{dur_txt}"
             return int(tid) if tid is not None else None, label
 
         def on_done(res: Tuple[Optional[int], Optional[str]]):
@@ -657,37 +836,32 @@ class MainWindow(QMainWindow):
                 tstate.matched_track_id = tid
                 tstate.matched_track_label = label  # Store the label for later display
             
-            # Update widgets only if they exist
-            if tstate.tidal_label is not None:
-                if tid is None:
-                    tstate.tidal_label.setText("No match found")
-                    tstate.tidal_label.setStyleSheet("color: #b00;")
-                    tstate.status_label.setText("No match")
-                else:
-                    tstate.tidal_label.setText(label or "Matched")
-                    tstate.tidal_label.setStyleSheet("")
-                    tstate.status_label.setText("Matched")
-                tstate.progress_bar.setValue(100)
+            # Notify model to repaint this item
+            st = self.playlists.get(playlist_id)
+            if st and st.tracks_model:
+                st.tracks_model.update_track(tstate.index)
             
             self._update_playlist_progress(playlist_id)
 
         def on_progress(pct: int):
             tstate.progress = pct
-            # Update widgets only if they exist
-            if tstate.progress_bar is not None:
-                tstate.progress_bar.setValue(pct)
-                if pct < 100 and tstate.status_label is not None:
-                    tstate.status_label.setText(f"Matching… {pct}%")
+            
+            # Notify model to repaint this item
+            st = self.playlists.get(playlist_id)
+            if st and st.tracks_model:
+                st.tracks_model.update_track(tstate.index)
+            
             self._update_playlist_progress(playlist_id)
 
         def on_error(e: Exception):
             tstate.progress = 100
-            # Update widgets only if they exist
-            if tstate.tidal_label is not None:
-                tstate.tidal_label.setText(f"Error: {e}")
-                tstate.tidal_label.setStyleSheet("color: #b00;")
-                tstate.status_label.setText("Error")
-                tstate.progress_bar.setValue(100)
+            tstate.matched_track_label = f"Error: {e}"
+            
+            # Notify model to repaint this item
+            st = self.playlists.get(playlist_id)
+            if st and st.tracks_model:
+                st.tracks_model.update_track(tstate.index)
+            
             self._update_playlist_progress(playlist_id)
 
         run_in_background(
