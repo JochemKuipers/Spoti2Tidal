@@ -1,8 +1,6 @@
 pyqt6-sip
 spotipy
 tidalapi
-redis
-requests
 PyQt6
 platformdirs
 python-dotenv
