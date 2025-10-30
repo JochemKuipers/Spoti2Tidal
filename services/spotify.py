@@ -1,18 +1,21 @@
 from __future__ import annotations
-import spotipy
-import spotipy.oauth2
-from PyQt6.QtCore import QThread, pyqtSignal
+
+import logging
 import math
+import os
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from platformdirs import user_config_dir
-import os
+from typing import Any
+
+import spotipy
+import spotipy.oauth2
 from dotenv import load_dotenv
-from typing import Any, List
-import logging
+from platformdirs import user_config_dir
+from PyQt6.QtCore import QThread, pyqtSignal
+
 from models.spotify import SpotifyPlaylist, SpotifyTrack
-import time
-import random
 
 load_dotenv()
 
@@ -102,7 +105,7 @@ class Spotify:
             self.market = user["country"] or "NL"
         return user
 
-    def get_user_playlists(self, progress_callback=None) -> List[SpotifyPlaylist]:
+    def get_user_playlists(self, progress_callback=None) -> list[SpotifyPlaylist]:
         self.logger.info("Fetching Spotify user playlists")
         playlists = []
         response = self.sp.current_user_playlists()
@@ -119,15 +122,15 @@ class Spotify:
         self.logger.info(f"First page items: {page_items}")
         if current_user_id:
             page_items = [
-                pl
-                for pl in page_items
-                if pl.get("owner", {}).get("id") == current_user_id
+                pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
             ]
         playlists.extend(page_items)
         self.logger.info(f"Playlists after first page: {playlists}")
         if progress_callback and total > 0:
             self.logger.debug(
-                f"Progress callback: {progress_callback(min(99, int(len(playlists) / total * 100)))}"
+                f"Progress callback: {
+                    progress_callback(min(99, int(len(playlists) / total * 100)))
+                }"
             )
             progress_callback(min(99, int(len(playlists) / total * 100)))
 
@@ -138,9 +141,7 @@ class Spotify:
             self.logger.info(f"Page items: {page_items}")
             if current_user_id:
                 page_items = [
-                    pl
-                    for pl in page_items
-                    if pl.get("owner", {}).get("id") == current_user_id
+                    pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
                 ]
             playlists.extend(page_items)
             self.logger.debug(f"Playlists after pagination: {playlists}")
@@ -154,7 +155,7 @@ class Spotify:
 
     def get_playlist_tracks(
         self, playlist_id, max_workers=5, progress_callback=None
-    ) -> List[SpotifyTrack]:
+    ) -> list[SpotifyTrack]:
         self.logger.info(f"Fetching Spotify tracks for playlist {playlist_id}")
         response = self.sp.playlist_items(playlist_id)
         self.logger.info(f"Response: {response}")
@@ -180,7 +181,9 @@ class Spotify:
                     msg = str(e).lower()
                     if "429" in msg or "too many" in msg or "rate" in msg:
                         self.logger.warning(
-                            f"Spotify rate limited on offset {offset} (attempt {attempt}/{max_retries}); backing off…"
+                            f"Spotify rate limited on offset {offset} (attempt "
+                            f"{attempt}/{max_retries}); "
+                            "backing off…"
                         )
                         time.sleep(delay + random.uniform(0, 0.25))
                         delay = min(8.0, delay * 2)
@@ -219,13 +222,9 @@ class Spotify:
 
         return tracks
 
-    def get_user_tracks(
-        self, max_workers=5, progress_callback=None
-    ) -> List[SpotifyTrack]:
+    def get_user_tracks(self, max_workers=5, progress_callback=None) -> list[SpotifyTrack]:
         self.logger.info("Fetching Spotify saved tracks")
-        response = self.sp.current_user_saved_tracks(
-            limit=50, offset=0, market=self.market
-        )
+        response = self.sp.current_user_saved_tracks(limit=50, offset=0, market=self.market)
         total = response["total"]
 
         batch_size = 50

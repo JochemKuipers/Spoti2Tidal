@@ -2,33 +2,35 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any
 
-from PyQt6.QtCore import Qt, QThreadPool, QAbstractListModel, QModelIndex, QSize
-from PyQt6.QtGui import QAction, QPainter, QColor, QFont, QPen
+from PyQt6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QThreadPool
+from PyQt6.QtGui import QAction, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
-    QListView,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
-    QStyle,
 )
 
 from gui.workers import run_in_background
+from models.spotify import SpotifyPlaylist, SpotifyTrack
 from services.spotify import Spotify
 from services.tidal import Tidal
 
@@ -37,46 +39,44 @@ from services.tidal import Tidal
 @dataclass
 class TrackState:
     index: int
-    sp_item: dict  # Spotify API track item dict
-    matched_track_id: Optional[int] = None
-    matched_track_label: Optional[str] = (
-        None  # Store the formatted label for matched tracks
-    )
+    sp_item: SpotifyTrack
+    matched_track_id: int | None = None
+    matched_track_label: str | None = None  # Store the formatted label for matched tracks
     progress: int = 0
 
 
 @dataclass
 class PlaylistState:
-    playlist: dict  # Spotify playlist dict
+    playlist: SpotifyPlaylist  # Spotify playlist dict
     list_item: QListWidgetItem
     list_widget: QWidget
     name_label: QLabel
     progress_bar: QProgressBar
     container: QWidget  # right panel content container for this playlist
-    tracks_view: Optional[QListView] = None  # Virtualized track list view
-    tracks_model: Optional["TrackListModel"] = None  # Model for tracks
-    tracks: List[TrackState] = field(default_factory=list)
-    tracks_raw_items: List[dict] = field(
+    tracks_view: QListView | None = None  # Virtualized track list view
+    tracks_model: TrackListModel | None = None  # Model for tracks
+    tracks: list[TrackState] = field(default_factory=list)
+    tracks_raw_items: list[SpotifyTrack] = field(
         default_factory=list
     )  # Store raw items for lazy widget creation
     widgets_built: bool = False  # Track if widgets have been built
     started: bool = False
     completed: bool = False
-    tidal_playlist_id: Optional[str] = None
+    tidal_playlist_id: str | None = None
 
 
 # ---- Virtualized Track List (Model + Delegate) ----
 class TrackListModel(QAbstractListModel):
     """Model for track list - only stores data, doesn't create widgets."""
 
-    def __init__(self, tracks: List[TrackState], parent=None):
+    def __init__(self, tracks: list[TrackState], parent=None):
         super().__init__(parent)
         self._tracks = tracks
 
-    def rowCount(self, parent=QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex | None = None) -> int:
         return len(self._tracks)
 
-    def data(self, index: QModelIndex, role: int):
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid() or index.row() >= len(self._tracks):
             return None
 
@@ -97,11 +97,16 @@ class TrackItemDelegate(QStyledItemDelegate):
     """Custom delegate to paint track items efficiently without creating widgets."""
 
     def paint(
-        self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
-    ):
+        self,
+        painter: QPainter | None,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        if painter is None:
+            return
         painter.save()
 
-        tstate: TrackState = index.data(Qt.ItemDataRole.UserRole)
+        tstate: TrackState | None = index.data(Qt.ItemDataRole.UserRole)
         if not tstate:
             painter.restore()
             return
@@ -126,12 +131,12 @@ class TrackItemDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
 
         # Extract track data
-        sp_track = tstate.sp_item.get("track") or {}
-        name = sp_track.get("name", "<unknown>")
-        artists = ", ".join(a.get("name") for a in (sp_track.get("artists") or []) if a)
-        album = (sp_track.get("album") or {}).get("name", "")
-        dur_ms = sp_track.get("duration_ms") or 0
-        dur_txt = self._fmt_duration(dur_ms)
+        sp_track: SpotifyTrack = tstate.sp_item
+        name: str = sp_track.name or "<unknown>"
+        artists: str = sp_track.artists_names or ""
+        album: str = sp_track.album_name or ""
+        dur_ms: int = sp_track.duration_ms or 0
+        dur_txt: str = self._fmt_duration(dur_ms)
 
         # Layout areas
         margin = 10
@@ -139,9 +144,7 @@ class TrackItemDelegate(QStyledItemDelegate):
 
         # Progress bar area (top)
         progress_height = 20
-        progress_rect = content_rect.adjusted(
-            0, 0, 0, -(content_rect.height() - progress_height)
-        )
+        progress_rect = content_rect.adjusted(0, 0, 0, -(content_rect.height() - progress_height))
 
         # Draw progress bar with palette colors
         progress_bg_color = palette.alternateBase().color()
@@ -158,9 +161,7 @@ class TrackItemDelegate(QStyledItemDelegate):
 
         # Progress text
         painter.setPen(text_color)
-        painter.drawText(
-            progress_rect, Qt.AlignmentFlag.AlignCenter, f"{tstate.progress}%"
-        )
+        painter.drawText(progress_rect, Qt.AlignmentFlag.AlignCenter, f"{tstate.progress}%")
 
         # Status text (right side of progress)
         status_text = self._get_status_text(tstate)
@@ -222,9 +223,7 @@ class TrackItemDelegate(QStyledItemDelegate):
         painter.drawText(
             spotify_rect.adjusted(0, y - spotify_rect.top(), 0, 0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-            self._elide_text(
-                f"{album} • {dur_txt}", spotify_rect.width(), painter.fontMetrics()
-            ),
+            self._elide_text(f"{album} • {dur_txt}", spotify_rect.width(), painter.fontMetrics()),
         )
 
         # Draw TIDAL info
@@ -259,9 +258,7 @@ class TrackItemDelegate(QStyledItemDelegate):
                 painter.drawText(
                     tidal_rect.adjusted(0, y - tidal_rect.top(), 0, 0),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    self._elide_text(
-                        td_name, tidal_rect.width(), painter.fontMetrics()
-                    ),
+                    self._elide_text(td_name, tidal_rect.width(), painter.fontMetrics()),
                 )
                 y += 16
 
@@ -270,9 +267,7 @@ class TrackItemDelegate(QStyledItemDelegate):
                 painter.drawText(
                     tidal_rect.adjusted(0, y - tidal_rect.top(), 0, 0),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    self._elide_text(
-                        td_artists, tidal_rect.width(), painter.fontMetrics()
-                    ),
+                    self._elide_text(td_artists, tidal_rect.width(), painter.fontMetrics()),
                 )
                 y += 16
 
@@ -306,9 +301,7 @@ class TrackItemDelegate(QStyledItemDelegate):
             painter.setPen(tidal_color)
             painter.drawText(
                 tidal_text_rect,
-                Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignTop
-                | Qt.TextFlag.TextWordWrap,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
                 tidal_text,
             )
 
@@ -352,7 +345,7 @@ class TrackItemDelegate(QStyledItemDelegate):
 
 
 class PlaylistListItem(QWidget):
-    def __init__(self, name: str, parent: Optional[QWidget] = None):
+    def __init__(self, name: str, parent: QWidget | None = None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -373,7 +366,7 @@ class TrackItemWidget(QWidget):
         sp_artists: str,
         sp_album: str,
         sp_dur: str,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         outer = QVBoxLayout(self)
@@ -434,13 +427,9 @@ class MainWindow(QMainWindow):
 
         # worker pools: separate pools to avoid fetch tasks blocking on match tasks
         self.fetch_pool = QThreadPool()
-        self.fetch_pool.setMaxThreadCount(
-            10
-        )  # Sequential-ish fetching to avoid rate limits
+        self.fetch_pool.setMaxThreadCount(10)  # Sequential-ish fetching to avoid rate limits
         self.match_pool = QThreadPool()
-        self.match_pool.setMaxThreadCount(
-            10
-        )  # Sequential matching to avoid TIDAL rate limits
+        self.match_pool.setMaxThreadCount(10)  # Sequential matching to avoid TIDAL rate limits
         # For backwards compatibility, keep self.pool pointing to match pool
         self.pool = self.match_pool
 
@@ -449,10 +438,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
         # state
-        self.playlists: Dict[str, PlaylistState] = {}
+        self.playlists: dict[str, PlaylistState] = {}
         # processing queue state (internal, UI-independent)
-        self.processing_queue: List[str] = []
-        self.currently_processing_id: Optional[str] = None
+        self.processing_queue: list[str] = []
+        self.currently_processing_id: str | None = None
 
         # kick off
         self._load_spotify_playlists()
@@ -460,10 +449,11 @@ class MainWindow(QMainWindow):
     # ---- UI scaffold ----
     def _build_menu(self):
         bar = self.menuBar()
-        acct = bar.addMenu("Account")
+        if bar is not None:
+            acct = bar.addMenu("Account")
         self.act_tidal_login = QAction("Connect TIDAL", self)
         self.act_tidal_login.triggered.connect(self._handle_tidal_login)
-        acct.addAction(self.act_tidal_login)
+        acct.addAction(self.act_tidal_login) if acct is not None else None
 
     def _build_ui(self):
         splitter = QSplitter()
@@ -481,9 +471,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.btn_reload)
 
         self.playlist_list = QListWidget()
-        self.playlist_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
+        self.playlist_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.playlist_list.currentItemChanged.connect(self._on_playlist_selected)
         self.playlist_list.setSpacing(6)
         left_layout.addWidget(self.playlist_list, 1)
@@ -515,16 +503,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "TIDAL", "Already logged in to TIDAL.")
             return
         url = self.tidal.get_pkce_login_url()
-        QApplication.clipboard().setText(url)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(url)
+        else:
+            QMessageBox.warning(self, "TIDAL", "Failed to copy login URL to clipboard.")
+            return
         QMessageBox.information(
             self,
             "TIDAL Login",
             "A PKCE login URL has been copied to your clipboard.\n"
-            "Open it in a browser, complete login, then copy the final redirect URL and paste it in the next dialog.",
+            "Open it in a browser, complete login, then copy the final redirect URL and paste "
+            "it in the next dialog.",
         )
-        ok = False
-        from PyQt6.QtWidgets import QInputDialog
-
         redirected, ok = QInputDialog.getText(
             self,
             "Complete TIDAL Login",
@@ -545,16 +536,14 @@ class MainWindow(QMainWindow):
         self.playlist_list.clear()
         self.playlists.clear()
 
-        def on_done(items: List[dict]):
+        def on_done(items: list[SpotifyPlaylist]):
             if not items:
-                QMessageBox.information(
-                    self, "Spotify", "No playlists found or not authenticated."
-                )
+                QMessageBox.information(self, "Spotify", "No playlists found or not authenticated.")
                 return
-            order_ids: List[str] = []
+            order_ids: list[str] = []
             for pl in items:
-                pid = pl.get("id")
-                name = pl.get("name") or pid
+                pid: str = pl.id
+                name: str = pl.name or pid
                 widget = PlaylistListItem(name)
                 item = QListWidgetItem(self.playlist_list)
                 item.setSizeHint(widget.sizeHint())
@@ -571,27 +560,17 @@ class MainWindow(QMainWindow):
                 hdr.setTextFormat(Qt.TextFormat.RichText)
                 header_row.addWidget(hdr, 1)
                 btn_sync = QPushButton("Sync to TIDAL")
-                btn_sync.setToolTip(
-                    "Create a TIDAL playlist and add all matched tracks"
-                )
+                btn_sync.setToolTip("Create a TIDAL playlist and add all matched tracks")
                 # bind handler later when we have state dict key
                 header_row.addWidget(btn_sync, 0)
                 c_layout.addLayout(header_row)
 
                 # Create virtualized track list view
                 tracks_view = QListView()
-                tracks_view.setVerticalScrollMode(
-                    QAbstractItemView.ScrollMode.ScrollPerPixel
-                )
-                tracks_view.setUniformItemSizes(
-                    True
-                )  # Major optimization for scrolling
-                tracks_view.setSelectionMode(
-                    QAbstractItemView.SelectionMode.NoSelection
-                )
-                tracks_view.setHorizontalScrollBarPolicy(
-                    Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-                )
+                tracks_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+                tracks_view.setUniformItemSizes(True)  # Major optimization for scrolling
+                tracks_view.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+                tracks_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                 c_layout.addWidget(tracks_view, 1)
 
                 self.playlists[pid] = PlaylistState(
@@ -608,9 +587,7 @@ class MainWindow(QMainWindow):
                 widget.progress.setValue(0)
                 order_ids.append(pid)
                 # Connect button now that state exists
-                btn_sync.clicked.connect(
-                    functools.partial(self._transfer_to_tidal, pid)
-                )
+                btn_sync.clicked.connect(functools.partial(self._transfer_to_tidal, pid))
 
             # Select first by default
             if self.playlist_list.count() > 0:
@@ -638,9 +615,7 @@ class MainWindow(QMainWindow):
             on_progress=None,  # per requirement, no global bar; we could animate list later
         )
 
-    def _on_playlist_selected(
-        self, current: QListWidgetItem, previous: Optional[QListWidgetItem]
-    ):
+    def _on_playlist_selected(self, current: QListWidgetItem, previous: QListWidgetItem | None):
         if not current:
             return
         # find playlist id by matching item
@@ -667,7 +642,7 @@ class MainWindow(QMainWindow):
         # clear right_layout and insert this container
         while self.right_layout.count():
             item = self.right_layout.takeAt(0)
-            w = item.widget()
+            w: QWidget | None = item.widget() if item is not None else None
             if w is not None:
                 w.setParent(None)
         self.right_layout.addWidget(self.playlists[pid].container, 1)
@@ -681,13 +656,13 @@ class MainWindow(QMainWindow):
         st.progress_bar.setValue(0)
         st.progress_bar.setFormat("Fetching tracks… %p%")
 
-        def on_tracks_done(items: List[dict]):
+        def on_tracks_done(items: list[SpotifyTrack]):
             # Store raw track data without building widgets
             # Widgets will be built lazily when user views the playlist
             st.tracks_raw_items = items
 
             # Create TrackState objects without widgets
-            for idx, it in enumerate(items):
+            for idx, it in enumerate[SpotifyTrack](items):
                 tstate = TrackState(
                     index=idx,
                     sp_item=it,
@@ -737,11 +712,9 @@ class MainWindow(QMainWindow):
         if not st:
             return
         # collect matched ids
-        ids = [t.matched_track_id for t in st.tracks if t.matched_track_id]
+        ids: list[str] = [str(t.matched_track_id) for t in st.tracks if t.matched_track_id]
         if not ids:
-            QMessageBox.information(
-                self, "Transfer", "No matched tracks to transfer yet."
-            )
+            QMessageBox.information(self, "Transfer", "No matched tracks to transfer yet.")
             return
         if not self.tidal.ensure_logged_in():
             QMessageBox.warning(
@@ -751,16 +724,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        name = st.playlist.get("name") or "From Spotify"
+        name = st.playlist.name or "From Spotify"
         st.progress_bar.setFormat("Transferring… %p%")
         st.progress_bar.setValue(0)
 
-        def do_transfer(progress_callback=None) -> Tuple[bool, Optional[str]]:
+        def do_transfer(progress_callback=None) -> tuple[bool, str | None]:
             # Create playlist if needed
             if not st.tidal_playlist_id:
-                created = self.tidal.create_playlist(
-                    name, description="Imported from Spotify"
-                )
+                created = self.tidal.create_playlist(name, description="Imported from Spotify")
                 if not created:
                     return False, "Failed to create TIDAL playlist"
                 st.tidal_playlist_id = getattr(created, "id", None)
@@ -773,7 +744,7 @@ class MainWindow(QMainWindow):
             added = 0
 
             for i in range(0, total, batch_size):
-                batch = ids[i : i + batch_size]
+                batch: list[str] = ids[i : i + batch_size]
                 ok = self.tidal.add_tracks_to_playlist(pid, batch)
                 added += len(batch) if ok else 0
                 if progress_callback:
@@ -782,12 +753,10 @@ class MainWindow(QMainWindow):
                 progress_callback(100)
             return True, None
 
-        def on_done(res: Tuple[bool, Optional[str]]):
+        def on_done(res: tuple[bool, str | None]):
             ok, err = res
             if ok:
-                QMessageBox.information(
-                    self, "Transfer", "Playlist transferred to TIDAL."
-                )
+                QMessageBox.information(self, "Transfer", "Playlist transferred to TIDAL.")
                 st.progress_bar.setFormat("Completed 100%")
                 st.progress_bar.setValue(100)
             else:
@@ -826,12 +795,12 @@ class MainWindow(QMainWindow):
         # clear right_layout and insert this container
         while self.right_layout.count():
             item = self.right_layout.takeAt(0)
-            w = item.widget()
+            w: QWidget | None = item.widget() if item is not None else None
             if w is not None:
                 w.setParent(None)
         self.right_layout.addWidget(self.playlists[pid].container, 1)
 
-    def _enqueue_playlists(self, ids: List[str]):
+    def _enqueue_playlists(self, ids: list[str]):
         # Initialize processing queue in given order
         self.processing_queue = [pid for pid in ids if pid in self.playlists]
         self.currently_processing_id = None
@@ -839,7 +808,7 @@ class MainWindow(QMainWindow):
 
     def _start_next_in_queue(self):
         # pick next not-started playlist
-        next_id: Optional[str] = None
+        next_id: str | None = None
         while self.processing_queue:
             cand = self.processing_queue.pop(0)
             st = self.playlists.get(cand)
@@ -892,15 +861,15 @@ class MainWindow(QMainWindow):
 
     # ---- per-track matching ----
     def _match_track_async(self, playlist_id: str, tstate: TrackState):
-        sp_track = tstate.sp_item.get("track") or {}
-        name = sp_track.get("name")
-        artists = sp_track.get("artists") or []
-        duration_ms = sp_track.get("duration_ms")
-        isrc = (sp_track.get("external_ids") or {}).get("isrc")
-        album = (sp_track.get("album") or {}).get("name")
+        sp_track: SpotifyTrack = tstate.sp_item
+        name: str = sp_track.name or ""
+        artists: list[dict] = sp_track.artists or []
+        duration_ms: int = sp_track.duration_ms or 0
+        isrc: str = (sp_track.external_ids or {}).get("isrc") or ""
+        album: str = (sp_track.album or {}).get("name") or ""
 
         # matching wrapper with pseudo-progress milestones
-        def do_match(progress_callback=None) -> Tuple[Optional[int], Optional[str]]:
+        def do_match(progress_callback=None) -> tuple[int | None, str | None]:
             # Ensure TIDAL session if possible (won't block)
             try:
                 self.tidal.ensure_logged_in()
@@ -937,7 +906,7 @@ class MainWindow(QMainWindow):
             label = f"{td_name}|{td_artists}|{td_album}|{dur_txt}"
             return int(tid) if tid is not None else None, label
 
-        def on_done(res: Tuple[Optional[int], Optional[str]]):
+        def on_done(res: tuple[int | None, str | None]):
             tid, label = res
             # Update internal state
             tstate.progress = 100

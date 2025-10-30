@@ -8,7 +8,8 @@ help:
 	@echo "  install       Install runtime dependencies"
 	@echo "  dev-install   Install dev tools (ruff, black, mypy, pyinstaller)"
 	@echo "  run           Run application"
-	@echo "  lint          Run ruff, black --check, and mypy"
+	@echo "  lint          Run ruff and black --check"
+	@echo "  typecheck     Run mypy type checker"
 	@echo "  format        Format code with black and ruff"
 	@echo "  clean         Remove build/cache artifacts"
 
@@ -28,7 +29,12 @@ build:
 lint:
 	ruff check .
 	black --check .
-	mypy .
+
+fix:
+	ruff check . --fix
+
+typecheck:
+	$(PY) -m mypy .
 
 format:
 	black .

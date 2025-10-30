@@ -36,12 +36,13 @@ lint.ignore = ["E731"]
 exclude = ["__pycache__", ".venv", ".git", "build", "dist"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 ignore_missing_imports = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 no_implicit_optional = true
 check_untyped_defs = true
 pretty = true
+explicit_package_bases = true
 
 

@@ -35,9 +35,7 @@ class SpotifyTrack:
         self.available_markets = available_markets  # List of strings
         self.disc_number = disc_number
         self.duration_ms = duration_ms
-        self._explicit = (
-            explicit  # Store as private variable to avoid conflict with property
-        )
+        self._explicit = explicit  # Store as private variable to avoid conflict with property
         self.external_ids = external_ids
         self._external_urls = external_urls  # Store as private variable
         self.href = href
@@ -127,14 +125,14 @@ class SpotifyPlaylist:
         type_,
         uri,
     ):
-        self.id = id
+        self._id = id
         self.name = name
         self.tracks = tracks
         self.collaborative = collaborative
         self.description = description
-        self.external_urls = external_urls
+        self._external_urls = external_urls
         self.href = href
-        self.images = images
+        self._images = images
         self.owner = owner
         self.primary_color = primary_color
         self.public = public
@@ -167,12 +165,12 @@ class SpotifyPlaylist:
 
     @property
     def images(self):
-        return self.images
+        return self._images
 
     @property
     def external_urls(self):
-        return self.external_urls
+        return self._external_urls
 
     @property
     def id(self):
-        return self.id
+        return self._id
