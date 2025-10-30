@@ -5,7 +5,6 @@ import logging
 from PyQt6.QtWidgets import QApplication
 from gui.main_window import MainWindow
 from logging_config import setup_logging
-from models.spotify import SpotifyTrack
 from services.spotify import Spotify
 from services.tidal import Tidal
 from typing import List, Dict, Any
