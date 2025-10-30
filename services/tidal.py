@@ -7,7 +7,6 @@ from typing import List, Optional
 import logging
 import re
 import time
-import os
 import random
 from threading import Lock
 

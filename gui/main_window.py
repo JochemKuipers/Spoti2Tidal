@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import functools
-import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QThreadPool, QTimer, QAbstractListModel, QModelIndex, QSize
+from PyQt6.QtCore import Qt, QThreadPool, QAbstractListModel, QModelIndex, QSize
 from PyQt6.QtGui import QAction, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -275,7 +273,7 @@ class TrackItemDelegate(QStyledItemDelegate):
             else:
                 return "No match"
         elif tstate.progress > 0:
-            return f"Matching…"
+            return "Matching…"
         return "Queued"
     
     def _get_tidal_text(self, tstate: TrackState) -> str:
@@ -679,7 +677,6 @@ class MainWindow(QMainWindow):
             batch_size = 50
             total = len(ids)
             added = 0
-            from math import ceil
 
             for i in range(0, total, batch_size):
                 batch = ids[i:i+batch_size]

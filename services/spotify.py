@@ -13,7 +13,6 @@ import logging
 from models.spotify import SpotifyPlaylist, SpotifyTrack
 import time
 import random
-import os
 
 load_dotenv()
 
