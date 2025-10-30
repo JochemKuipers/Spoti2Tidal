@@ -542,7 +542,7 @@ class MainWindow(QMainWindow):
                 return
             order_ids: list[str] = []
             for pl in items:
-                pid: str = pl.pid
+                pid: str = pl.id
                 name: str = pl.name or pid
                 widget = PlaylistListItem(name)
                 item = QListWidgetItem(self.playlist_list)
