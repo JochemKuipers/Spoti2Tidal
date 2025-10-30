@@ -8,7 +8,7 @@ from logging_config import setup_logging
 from services.spotify import Spotify
 from services.tidal import Tidal
 
-SPOTIFY_TRACK_URL = "https://open.spotify.com/track/5iSEY9x2UHbDArz4NmlGTZ?si=46c86070ff894e59"
+SPOTIFY_TRACK_URL = "https://open.spotify.com/track/12k1quthsLMqcCReClVl7A?si=b13ecd9350f740c9"
 
 
 def extract_spotify_id(url: str) -> str | None:

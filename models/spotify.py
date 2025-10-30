@@ -1,176 +1,132 @@
+import datetime
 import time
+from dataclasses import dataclass
+
+from typing import TypedDict, TypeVar, Generic
+from collections.abc import Mapping
+
+T = TypeVar("T")
 
 
-class SpotifyTrack:
-    """
-    Represents a single track fetched from the Spotify API
-    using nearly all track properties returned by the API (see prompt for fields).
-    """
+class ExternalUrls(TypedDict):
+    spotify: str
 
+class Followers(TypedDict):
+    href: str
+    total: int
+
+class Image(TypedDict):
+    height: int
+    width: int
+    url: str
+
+    
+class Copyright(TypedDict):
+    text: str
+    type: str
+    
+
+class Paging(TypedDict, Generic[T]):
+    href: str
+    items: list[T]
+    limit: int
+    next: str | None
+    offset: int
+    previous: str | None
+    total: int
+    
+class PublicUser(TypedDict):
+    display_name: str
+    external_urls: ExternalUrls
+    followers: Followers
+    href: str
+    id: str
+    images: list[Image]
+    type: str
+    uri: str
+    
+class PrivateUser(TypedDict):
+    country: str
+    display_name: str
+    email: str
+    explicit_content: dict[str, bool]
+    external_urls: ExternalUrls
+    followers: Followers
+    href: str
+    id: str
+    images: list[Image]
+    product: str
+    type: str
+    uri: str
+    
+class SpotifyArtist(TypedDict):
+    external_urls: ExternalUrls
+    followers: Followers
+    genres: list[str]
+    href: str
+    id: str
+    images: list[Image]
+    name: str
+    popularity: int
+    type: str
+    uri: str
+
+class SpotifyAlbum(TypedDict):
+    album_type: str
+    artists: list[SpotifyArtist]
+    available_markets: list[str]
+    copyrights: list[Copyright]
+    external_ids: dict[str, str]
+    external_urls: dict[str, str]
+    genres: list[str]
+    href: str
+    id: str
+    images: list[Image]
+    label: str
+    name: str
+    popularity: int
+    release_date: str
+    release_date_precision: str
+    restrictions: dict[str, str]
+    total_tracks: int
+    tracks: Paging['SpotifyTrackObject']
+
+class SpotifyTrackObject(TypedDict, total=False):
+    id: str
+    name: str
+    artists: list[SpotifyArtist]
+    album: SpotifyAlbum
+    available_markets: list[str]
+    disc_number: int
+    duration_ms: int
+    explicit: bool
+    external_ids: dict[str, str]
+    external_urls: dict[str, str]
+    href: str
+    is_local: bool
+    is_playable: bool
+    popularity: int
+    preview_url: str | None
+    track_number: int
+    type: str
+    uri: str
+
+class PlaylistTrack(Generic[T]):
     def __init__(
         self,
-        id,
-        name,
-        artists,
-        album,
-        available_markets,
-        disc_number,
-        duration_ms,
-        explicit,
-        external_ids,
-        external_urls,
-        href,
-        is_local,
-        is_playable,
-        popularity,
-        preview_url,
-        track_number,
-        type_,
-        uri,
+        added_at: datetime.datetime | None,
+        added_by: 'PublicUser',
+        is_local: bool,
+        track: T
     ):
-        self.id = id
-        self.name = name
-        self.artists = artists  # List of dicts, artist objects
-        self.album = album  # Album dict/object
-        self.available_markets = available_markets  # List of strings
-        self.disc_number = disc_number
-        self.duration_ms = duration_ms
-        self._explicit = explicit  # Store as private variable to avoid conflict with property
-        self.external_ids = external_ids
-        self._external_urls = external_urls  # Store as private variable
-        self.href = href
-        self._is_local = is_local  # Store as private variable
-        self._is_playable = is_playable  # Store as private variable
-        self.popularity = popularity
-        self.preview_url = preview_url
-        self.track_number = track_number
-        self.type = type_
-        self._uri = uri  # Store as private variable
+        self.added_at: datetime.datetime | None = added_at
+        self.added_by: PublicUser = added_by
+        self.is_local: bool = is_local
+        self.track: T = track
+        
 
-    @classmethod
-    def from_api(cls, track_obj):
-        """
-        Build SpotifyTrack from a Spotify track dict (as from API).
-        """
-        track = track_obj["track"]
-        return cls(
-            id=track.get("id"),
-            name=track.get("name"),
-            artists=track.get("artists"),  # List of dicts
-            album=track.get("album"),
-            available_markets=track.get("available_markets"),
-            disc_number=track.get("disc_number"),
-            duration_ms=track.get("duration_ms"),
-            explicit=track.get("explicit"),
-            external_ids=track.get("external_ids"),
-            external_urls=track.get("external_urls"),
-            href=track.get("href"),
-            is_local=track.get("is_local"),
-            is_playable=track.get("is_playable"),
-            popularity=track.get("popularity"),
-            preview_url=track.get("preview_url"),
-            track_number=track.get("track_number"),
-            type_=track.get("type"),
-            uri=track.get("uri"),
-        )
-
-    @property
-    def artists_names(self):
-        return ", ".join([artist.get("name") for artist in self.artists])
-
-    @property
-    def album_name(self):
-        return self.album["name"]
-
-    @property
-    def duration_formatted(self):
-        return time.strftime("%M:%S", time.gmtime(self.duration_ms / 1000))
-
-    @property
-    def explicit(self):
-        return self._explicit
-
-    @property
-    def local(self):
-        return self._is_local
-
-    @property
-    def playable(self):
-        return self._is_playable
-
-    @property
-    def uri(self):
-        return self._uri
-
-    @property
-    def external_urls(self):
-        return self._external_urls
-
-
-class SpotifyPlaylist:
-    def __init__(
-        self,
-        id,
-        name,
-        tracks,
-        collaborative,
-        description,
-        external_urls,
-        href,
-        images,
-        owner,
-        primary_color,
-        public,
-        snapshot_id,
-        type_,
-        uri,
-    ):
-        self._id = id
-        self.name = name
-        self.tracks = tracks
-        self.collaborative = collaborative
-        self.description = description
-        self._external_urls = external_urls
-        self.href = href
-        self._images = images
-        self.owner = owner
-        self.primary_color = primary_color
-        self.public = public
-        self.snapshot_id = snapshot_id
-        self.type = type_
-        self.uri = uri
-
-    @classmethod
-    def from_api(cls, playlist_obj):
-        return cls(
-            id=playlist_obj["id"],
-            name=playlist_obj["name"],
-            tracks=playlist_obj["tracks"],
-            collaborative=playlist_obj.get("collaborative"),
-            description=playlist_obj.get("description"),
-            external_urls=playlist_obj.get("external_urls"),
-            href=playlist_obj.get("href"),
-            images=playlist_obj.get("images"),
-            owner=playlist_obj.get("owner"),
-            primary_color=playlist_obj.get("primary_color"),
-            public=playlist_obj.get("public"),
-            snapshot_id=playlist_obj.get("snapshot_id"),
-            type_=playlist_obj.get("type"),
-            uri=playlist_obj.get("uri"),
-        )
-
-    @property
-    def tracks_count(self):
-        return self.tracks.get("total")
-
-    @property
-    def images(self):
-        return self._images
-
-    @property
-    def external_urls(self):
-        return self._external_urls
-
-    @property
-    def id(self):
-        return self._id
+class SavedTrack(TypedDict):
+    added_at: datetime.datetime | None
+    added_by: PublicUser
+    is_local: bool
+    track: SpotifyTrackObject

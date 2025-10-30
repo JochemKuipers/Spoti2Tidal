@@ -107,7 +107,7 @@ class Spotify:
 
     def get_user_playlists(self, progress_callback=None) -> list[SpotifyPlaylist]:
         self.logger.info("Fetching Spotify user playlists")
-        playlists = []
+        playlists: list[SpotifyPlaylist] = []
         response = self.sp.current_user_playlists()
         total = response.get("total", 0) or 0
 
@@ -124,7 +124,7 @@ class Spotify:
             page_items = [
                 pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
             ]
-        playlists.extend(page_items)
+        playlists.extend([SpotifyPlaylist.from_api(pl) for pl in page_items])
         self.logger.info(f"Playlists after first page: {playlists}")
         if progress_callback and total > 0:
             self.logger.debug(
@@ -143,7 +143,7 @@ class Spotify:
                 page_items = [
                     pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
                 ]
-            playlists.extend(page_items)
+            playlists.extend([SpotifyPlaylist.from_api(pl) for pl in page_items])
             self.logger.debug(f"Playlists after pagination: {playlists}")
             if progress_callback and total > 0:
                 progress_callback(min(99, int(len(playlists) / total * 100)))
@@ -211,11 +211,16 @@ class Spotify:
                     progress_callback(min(99, int(completed / num_batches * 100)))
 
         # Combine results in order
-        tracks = []
+        tracks: list[SpotifyTrack] = []
         for batch_num in range(num_batches):
             offset = batch_num * batch_size
             if offset in results:
-                tracks.extend(results[offset])
+                # Convert each raw item to SpotifyTrack
+                for item in results[offset]:
+                    try:
+                        tracks.append(SpotifyTrack.from_api(item))
+                    except Exception:
+                        self.logger.exception("Failed to parse Spotify track item")
 
         if progress_callback:
             progress_callback(100)
@@ -262,11 +267,15 @@ class Spotify:
                     progress_callback(min(99, int(completed / num_batches * 100)))
 
         # Combine results in order
-        tracks = []
+        tracks: list[SpotifyTrack] = []
         for batch_num in range(num_batches):
             offset = batch_num * batch_size
             if offset in results:
-                tracks.extend(results[offset])
+                for item in results[offset]:
+                    try:
+                        tracks.append(SpotifyTrack.from_api(item))
+                    except Exception:
+                        self.logger.exception("Failed to parse Spotify saved track item")
 
         if progress_callback:
             progress_callback(100)

@@ -2,6 +2,7 @@ import logging
 import random
 import re
 import time
+from typing import Any
 import webbrowser
 from pathlib import Path
 from threading import Lock
@@ -72,8 +73,13 @@ class Tidal:
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
         self._load_session_silent()
-
-        self.user: LoggedInUser | FetchedUser | PlaylistCreator = self.session.get_user().factory()
+        # Lazily resolve user only when logged in; avoid API call when user_id is None
+        self.user: LoggedInUser | FetchedUser | PlaylistCreator | None = None
+        try:
+            if self.session.check_login():
+                self.user = self.session.get_user().factory()
+        except Exception:
+            self.user = None
 
     def _load_session_silent(self) -> bool:
         try:
@@ -109,7 +115,13 @@ class Tidal:
         token_json = self.session.pkce_get_auth_token(redirected_url)
         self.session.process_auth_token(token_json, is_pkce_token=True)
         self.save_tokens()
-        return self.session.check_login()
+        ok = self.session.check_login()
+        if ok:
+            try:
+                self.user = self.session.get_user().factory()
+            except Exception:
+                self.user = None
+        return ok
 
     # ---- persistence ----
     def save_tokens(self) -> None:
@@ -127,11 +139,20 @@ class Tidal:
 
     def ensure_logged_in(self) -> bool:
         if self.is_logged_in():
+            if self.user is None:
+                try:
+                    self.user = self.session.get_user().factory()
+                except Exception:
+                    self.user = None
             return True
         if self.session.refresh_token:
             try:
                 if self.session.token_refresh(self.session.refresh_token):
                     self.save_tokens()
+                    try:
+                        self.user = self.session.get_user().factory()
+                    except Exception:
+                        self.user = None
                     return True
             except Exception:
                 pass
@@ -141,7 +162,7 @@ class Tidal:
         return self.session
 
     def get_user(self):
-        return self.session.user
+        return self.user
 
     def get_user_playlists(self, progress_callback=None) -> list[Playlist | UserPlaylist]:
         self.logger.info("Fetching TIDAL user playlists")
@@ -317,17 +338,17 @@ class Tidal:
             artists_list = []
             for a in artists:
                 if isinstance(a, dict):
-                    name = a.get("name") or ""
-                    name_str = name.strip() if isinstance(name, str) else ""
+                    artist_name = a.get("name") or ""
+                    artist_name_str = artist_name.strip() if isinstance(artist_name, str) else ""
                 elif isinstance(a, str):
-                    name_str = a.strip()
+                    artist_name_str = a.strip()
                 else:
-                    name_str = str(a).strip()
-                if name_str:
-                    artists_list.append(name_str)
+                    artist_name_str = str(a).strip()
+                if artist_name_str:
+                    artists_list.append(artist_name_str)
 
         all_results: list[tidalapi.media.Track] = []
-        seen_ids = set()
+        seen_ids = set[Any]()
 
         # 1. Perform one query for each single artist
         for artist_name in artists_list:
