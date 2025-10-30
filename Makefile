@@ -1,16 +1,15 @@
 PY ?= python3
 PIP ?= $(PY) -m pip
 
-.PHONY: help install dev-install run lint format test clean
+.PHONY: help install dev-install run lint format clean
 
 help:
 	@echo "Available targets:"
 	@echo "  install       Install runtime dependencies"
-	@echo "  dev-install   Install dev tools (ruff, black, pytest)"
+	@echo "  dev-install   Install dev tools (ruff, pyinstaller)"
 	@echo "  run           Run application"
 	@echo "  lint          Lint code with ruff"
-	@echo "  format        Format code with black"
-	@echo "  test          Run tests with pytest"
+	@echo "  format        Format code with ruff"
 	@echo "  clean         Remove build/cache artifacts"
 
 install:
@@ -18,7 +17,7 @@ install:
 
 dev-install: install
 	$(PIP) install -U pip
-	$(PIP) install ruff black pytest pyinstaller
+	$(PIP) install ruff pyinstaller
 
 run:
 	$(PY) -m main
@@ -30,17 +29,12 @@ lint:
 	ruff check .
 
 format:
-	black .
-
-test:
-	pytest -q
+	ruff format .
 
 clean:
-	rm -rf .pytest_cache
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.py[co]" -delete
 	rm -rf dist
 	rm -rf build
 	rm -rf main.spec
 	rm -rf .ruff_cache
-	rm -rf .black_cache
