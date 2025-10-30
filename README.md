@@ -2,6 +2,19 @@
 
 Sync your Spotify playlists to TIDAL.
 
+## Disclaimer
+
+Matching tracks across services can take a long time, especially for large libraries. This is expected due to API rate limits and the need for careful, fuzzy matching to improve accuracy. Please be patient during the matching phase.
+
+## How it works
+
+1. Authenticate with TIDAL (PKCE). On first run, a browser opens for login; paste the final redirect URL when prompted.
+2. Read your Spotify playlists and tracks.
+3. For each Spotify track, search TIDAL using title, artists, album, and duration with fuzzy matching and heuristics to pick the best candidate.
+4. Respect API rate limits with backoff; retries are applied for transient errors.
+5. In dry-run, only resolve matches and produce a report; no changes are made to TIDAL.
+6. In sync mode, create missing TIDAL playlists and add matched tracks, preserving order when possible. Unmatched tracks are reported.
+
 ## GUI
 
 Launch the GUI:
