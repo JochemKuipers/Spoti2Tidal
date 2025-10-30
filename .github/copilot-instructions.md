@@ -4,28 +4,28 @@ Purpose: a PyQt6 desktop app to migrate Spotify playlists to TIDAL. Keep edits a
 
 ## Architecture and flow
 
-- Entry point: `src/main.py` sets logging (`src/logging_config.py`), starts `QApplication`, and shows `gui/MainWindow`.
-- Background workers: `src/gui/workers.py`
+- Entry point: `main.py` sets logging (`logging_config.py`), starts `QApplication`, and shows `gui/MainWindow`.
+- Background workers: `gui/workers.py`
   - `run_in_background(pool, fn, on_done, on_error, on_progress)` wraps a `QRunnable` that auto‑injects a `progress_callback` kwarg IFF the target function signature includes it. Pattern: services accept `progress_callback=None` and emit `0..100`.
 - Services:
-  - Spotify (`src/services/spotify.py`): wraps Spotipy OAuth and APIs. Loads `.env` via `python-dotenv`. Caches OAuth at `%APPDATA%/Spoti2Tidal/spotify_cache/spotify_cache.json` (via `platformdirs`).
+  - Spotify (`services/spotify.py`): wraps Spotipy OAuth and APIs. Loads `.env` via `python-dotenv`. Caches OAuth at `%APPDATA%/Spoti2Tidal/spotify_cache/spotify_cache.json` (via `platformdirs`).
     - `get_user()` also updates `self.market` from the user’s `country`.
     - `get_user_playlists(progress_callback)` filters to playlists owned by the current user and paginates.
     - `get_playlist_tracks(playlist_id, ..., progress_callback)` fetches in parallel (ThreadPoolExecutor) and merges batches deterministically by offset.
-  - TIDAL (`src/services/tidal.py`): wraps `tidalapi.Session()` with token persistence at `%APPDATA%/Spoti2Tidal/tidal_session.json`.
+  - TIDAL (`services/tidal.py`): wraps `tidalapi.Session()` with token persistence at `%APPDATA%/Spoti2Tidal/tidal_session.json`.
     - PKCE login: `get_pkce_login_url()` → user logs in in browser → paste redirect URL → `complete_pkce_login(url)`; `ensure_logged_in()` attempts refresh.
     - Fetch: `get_user_playlists(...)`, `get_playlist_tracks(...)` (paged), `get_playlist_track_ids(...)`.
     - Matching: `resolve_best_match(isrc, name, artists, duration_ms, album=None)`
       - Prefer exact ISRC; else score by normalized title/artist/duration and add a small quality weight. Uses `quality_label()` and `pick_best_quality()` helpers.
-- Models: `src/models/spotify.py` gives `SpotifyTrack.from_api(...)` and formatting helpers (e.g., `duration_formatted`). In many places, raw dicts from Spotipy are still passed directly—follow existing usage.
+- Models: `models/spotify.py` gives `SpotifyTrack.from_api(...)` and formatting helpers (e.g., `duration_formatted`). In many places, raw dicts from Spotipy are still passed directly—follow existing usage.
 
 ## Developer workflows
 
 - Install deps: `pip install -r requirements.txt` (Makefile target: `make install`).
-- Run app: `python -m src.main` (Makefile: `make run`). On Windows PowerShell, prefer `python` over `python3` (Makefile defaults to `python3`).
-- Build single binary (optional): `pyinstaller --onefile src/main.py` (Makefile: `make build`).
-- Lint/format/tests (optional): `ruff check src`, `black src`, `pytest -q` (targets: `make lint|format|test`). There are no formal tests; use the script below for manual checks.
-- Debug matching quickly: `src/scripts/test_crossref.py` prints a sample Spotify track and the resolved TIDAL match.
+- Run app: `python -m main` (Makefile: `make run`). On Windows PowerShell, prefer `python` over `python3` (Makefile defaults to `python3`).
+- Build single binary (optional): `pyinstaller --onefile main.py` (Makefile: `make build`).
+- Lint/format/tests (optional): `ruff check .`, `black .`, `pytest -q` (targets: `make lint|format|test`). There are no formal tests; use the script below for manual checks.
+- Debug matching quickly: `scripts/test_crossref.py` prints a sample Spotify track and the resolved TIDAL match.
 
 ## Credentials and persistence
 

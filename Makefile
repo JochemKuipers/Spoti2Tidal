@@ -1,6 +1,5 @@
 PY ?= python3
 PIP ?= $(PY) -m pip
-SRC_DIR := src
 
 .PHONY: help install dev-install run lint format test clean
 
@@ -22,24 +21,24 @@ dev-install: install
 	$(PIP) install ruff black pytest pyinstaller
 
 run:
-	$(PY) -m $(SRC_DIR).main
+	$(PY) -m main
 
 build:
-	pyinstaller --onefile $(SRC_DIR)/main.py
+	pyinstaller --onefile main.py
 
 lint:
-	ruff check $(SRC_DIR)
+	ruff check .
 
 format:
-	black $(SRC_DIR)
+	black .
 
 test:
 	pytest -q
 
 clean:
 	rm -rf .pytest_cache
-	find $(SRC_DIR) -type d -name "__pycache__" -exec rm -rf {} +
-	find $(SRC_DIR) -type f -name "*.py[co]" -delete
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.py[co]" -delete
 	rm -rf dist
 	rm -rf build
 	rm -rf main.spec

@@ -30,9 +30,9 @@ from PyQt6.QtWidgets import (
     QStyle,
 )
 
-from src.gui.workers import run_in_background
-from src.services.spotify import Spotify
-from src.services.tidal import Tidal
+from gui.workers import run_in_background
+from services.spotify import Spotify
+from services.tidal import Tidal
 
 
 # ---- simple data holders ----
