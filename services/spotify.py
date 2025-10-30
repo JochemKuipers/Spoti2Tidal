@@ -95,7 +95,7 @@ class Spotify:
         return self.sp
 
     def get_user(self) -> Any | None:
-        self.logger.debug("Fetching Spotify current user")
+        self.logger.info("Fetching Spotify current user")
         user = self.sp.current_user()
         # Update market based on user's country
         if user and "country" in user:
@@ -109,11 +109,14 @@ class Spotify:
         total = response.get("total", 0) or 0
 
         # Get current user id
+        self.logger.info("Fetching current Spotify user")
         current_user = self.sp.current_user()
+        self.logger.info(f"Current Spotify user: {current_user}")
         current_user_id = current_user.get("id") if current_user else None
 
         # include first page, only keep playlists owned by current user
         page_items = response.get("items", [])
+        self.logger.info(f"First page items: {page_items}")
         if current_user_id:
             page_items = [
                 pl
@@ -121,13 +124,16 @@ class Spotify:
                 if pl.get("owner", {}).get("id") == current_user_id
             ]
         playlists.extend(page_items)
+        self.logger.info(f"Playlists after first page: {playlists}")
         if progress_callback and total > 0:
+            self.logger.debug(f"Progress callback: {progress_callback(min(99, int(len(playlists) / total * 100)))}")
             progress_callback(min(99, int(len(playlists) / total * 100)))
 
         # paginate
         while response.get("next"):
             response = self.sp.next(response)
             page_items = response.get("items", [])
+            self.logger.info(f"Page items: {page_items}")
             if current_user_id:
                 page_items = [
                     pl
@@ -135,10 +141,12 @@ class Spotify:
                     if pl.get("owner", {}).get("id") == current_user_id
                 ]
             playlists.extend(page_items)
+            self.logger.debug(f"Playlists after pagination: {playlists}")
             if progress_callback and total > 0:
                 progress_callback(min(99, int(len(playlists) / total * 100)))
 
         if progress_callback:
+            self.logger.debug(f"Progress callback: {progress_callback(100)}")
             progress_callback(100)
         return playlists
 
@@ -147,10 +155,12 @@ class Spotify:
     ) -> List[SpotifyTrack]:
         self.logger.info(f"Fetching Spotify tracks for playlist {playlist_id}")
         response = self.sp.playlist_items(playlist_id)
+        self.logger.info(f"Response: {response}")
         total = response["total"]
 
         batch_size = 50
         num_batches = math.ceil(total / batch_size)
+        self.logger.info(f"Number of batches: {num_batches}")
         results = {}
 
         def fetch_batch(offset):
@@ -182,12 +192,14 @@ class Spotify:
                 executor.submit(fetch_batch, batch_num * batch_size): batch_num
                 for batch_num in range(num_batches)
             }
+            self.logger.info(f"Submitted {len(futures)} futures for playlist tracks")
 
             completed = 0
             for future in as_completed(futures):
                 offset, items, error = future.result()
                 results[offset] = items
                 completed += 1
+                self.logger.info(f"Fetched {completed} of {num_batches} batches for playlist tracks")
                 if progress_callback:
                     progress_callback(min(99, int(completed / num_batches * 100)))
 
@@ -234,9 +246,13 @@ class Spotify:
 
             completed = 0
             for future in as_completed(futures):
-                offset, items = future.result()
+                offset, items, error = future.result()
+                if error:
+                    self.logger.error(f"Error fetching Spotify saved tracks batch at offset {offset}: {error}")
+                    continue
                 results[offset] = items
                 completed += 1
+                self.logger.info(f"Fetched {completed} of {num_batches} batches")
                 if progress_callback:
                     progress_callback(min(99, int(completed / num_batches * 100)))
 

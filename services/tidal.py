@@ -599,6 +599,25 @@ class Tidal:
             self.logger.exception(f"Failed to add tracks to TIDAL playlist: {e}")
             return False
 
+    def add_tracks_to_favorites(self, track_ids: List[int | str]) -> bool:
+        self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL favorites")
+        try:
+            if not track_ids:
+                return True
+            favorites = self.session.user.favorites
+            # The installed tidalapi supports add_track(list[str]|str)
+            # Batch to avoid overly long requests
+            batch_size = 100
+            for i in range(0, len(track_ids), batch_size):
+                batch = [str(int(t)) for t in track_ids[i : i + batch_size]]
+                with _TIDAL_API_LOCK:
+                    time.sleep(_TIDAL_API_DELAY)
+                    favorites.add_track(batch)
+            return True
+        except Exception as e:
+            self.logger.exception(f"Failed to add tracks to TIDAL favorites: {e}")
+            return False
+
     def get_playlist_track_ids(self, playlist_id: str) -> List[int]:
         self.logger.info(
             f"Fetching TIDAL playlist track IDs for playlist {playlist_id}"

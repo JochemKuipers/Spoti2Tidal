@@ -31,12 +31,37 @@ python main.py
 
 ## CLI
 
-Run the app headlessly with optional dry-run and automatic sync.
+Run the app headlessly with optional dry-run, selectable modes, and verbose output.
 
 - Dry-run (resolve matches only, no writes to TIDAL):
 
 ```bash
 python main.py --cli --dry-run
+```
+
+- Sync playlists and saved tracks (default when no modes specified):
+
+```bash
+python main.py --cli
+```
+
+- Sync only playlists:
+
+```bash
+python main.py --cli --playlists
+```
+
+- Sync only saved tracks (Liked Songs) to TIDAL favorites:
+
+```bash
+python main.py --cli --saved-tracks
+```
+
+- Verbose output (DEBUG-level logs); can be combined with modes:
+
+```bash
+python main.py --cli --verbose
+python main.py --cli --saved-tracks --verbose
 ```
 
 - Automatic sync (create TIDAL playlists and add matched tracks):

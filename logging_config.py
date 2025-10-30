@@ -3,7 +3,7 @@ import logging
 import sys
 
 
-def setup_logging(level: int = logging.WARN) -> None:
+def setup_logging(level: int = logging.WARNING) -> None:
     root = logging.getLogger()
     if root.handlers:
         return
