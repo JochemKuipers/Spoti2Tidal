@@ -1,4 +1,4 @@
-PY ?= python3
+PY ?= python
 PIP ?= $(PY) -m pip
 
 .PHONY: help install dev-install run lint format clean

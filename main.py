@@ -10,7 +10,9 @@ from services.tidal import Tidal
 from typing import List, Dict, Any
 
 
-def _match_spotify_items_to_tidal_ids(td: Tidal, items: List[Dict[str, Any]]) -> List[int]:
+def _match_spotify_items_to_tidal_ids(
+    td: Tidal, items: List[Dict[str, Any]]
+) -> List[int]:
     matched_ids: List[int] = []
     total = len(items)
     for idx, it in enumerate(items, start=1):
@@ -38,7 +40,9 @@ def _match_spotify_items_to_tidal_ids(td: Tidal, items: List[Dict[str, Any]]) ->
     return matched_ids
 
 
-def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose: bool) -> int:
+def run_cli(
+    dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose: bool
+) -> int:
     """Run the headless CLI flow.
 
     - Always fetch Spotify playlists and resolve TIDAL matches
@@ -95,11 +99,15 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
                 matched_ids = _match_spotify_items_to_tidal_ids(td, items)
 
                 if dry_run:
-                    print("  Dry-run enabled: not creating TIDAL playlist or adding tracks.")
+                    print(
+                        "  Dry-run enabled: not creating TIDAL playlist or adding tracks."
+                    )
                     continue
 
                 if matched_ids:
-                    created = td.create_playlist(name, description="Synced from Spotify")
+                    created = td.create_playlist(
+                        name, description="Synced from Spotify"
+                    )
                     if not created:
                         print("  Failed to create TIDAL playlist; skipping.")
                         continue
@@ -109,7 +117,9 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
                         continue
                     ok = td.add_tracks_to_playlist(tpid, matched_ids)
                     if ok:
-                        print(f"  Added {len(matched_ids)} tracks to TIDAL playlist '{name}'.")
+                        print(
+                            f"  Added {len(matched_ids)} tracks to TIDAL playlist '{name}'."
+                        )
                         overall_added += len(matched_ids)
                     else:
                         print("  Failed to add tracks to TIDAL playlist.")

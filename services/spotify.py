@@ -126,7 +126,9 @@ class Spotify:
         playlists.extend(page_items)
         self.logger.info(f"Playlists after first page: {playlists}")
         if progress_callback and total > 0:
-            self.logger.debug(f"Progress callback: {progress_callback(min(99, int(len(playlists) / total * 100)))}")
+            self.logger.debug(
+                f"Progress callback: {progress_callback(min(99, int(len(playlists) / total * 100)))}"
+            )
             progress_callback(min(99, int(len(playlists) / total * 100)))
 
         # paginate
@@ -199,7 +201,9 @@ class Spotify:
                 offset, items, error = future.result()
                 results[offset] = items
                 completed += 1
-                self.logger.info(f"Fetched {completed} of {num_batches} batches for playlist tracks")
+                self.logger.info(
+                    f"Fetched {completed} of {num_batches} batches for playlist tracks"
+                )
                 if progress_callback:
                     progress_callback(min(99, int(completed / num_batches * 100)))
 
@@ -248,7 +252,9 @@ class Spotify:
             for future in as_completed(futures):
                 offset, items, error = future.result()
                 if error:
-                    self.logger.error(f"Error fetching Spotify saved tracks batch at offset {offset}: {error}")
+                    self.logger.error(
+                        f"Error fetching Spotify saved tracks batch at offset {offset}: {error}"
+                    )
                     continue
                 results[offset] = items
                 completed += 1
