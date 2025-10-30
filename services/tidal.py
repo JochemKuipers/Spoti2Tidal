@@ -173,7 +173,9 @@ class Tidal:
         while True:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                page = self.session.user.favorites.tracks(limit=page_limit, offset=offset)
+                page = self.session.user.favorites.tracks(
+                    limit=page_limit, offset=offset
+                )
             if not page:
                 break
             tracks.extend(page)
@@ -237,7 +239,7 @@ class Tidal:
     # ---- search & matching helpers ----
     def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
         self.logger.debug(f"Searching TIDAL for tracks: {query}")
-        
+
         max_retries = 3
         delay = 0.5  # Increased from 0.1 to 0.5 seconds
 
@@ -247,8 +249,10 @@ class Tidal:
                 with _TIDAL_API_LOCK:
                     # Add delay before each API call
                     time.sleep(_TIDAL_API_DELAY)
-                    results = self.session.search(query=query, models=[tidalapi.media.Track], limit=limit)
-                
+                    results = self.session.search(
+                        query=query, models=[tidalapi.media.Track], limit=limit
+                    )
+
                 # Normalize shape
                 if isinstance(results, list):
                     tracks = results
@@ -256,20 +260,24 @@ class Tidal:
                     tracks = results.get("tracks") or []
                 else:
                     tracks = getattr(results, "tracks", []) or []
-                self.logger.debug(f"Found {len(tracks)} TIDAL tracks for search: {query}")
+                self.logger.debug(
+                    f"Found {len(tracks)} TIDAL tracks for search: {query}"
+                )
                 return tracks
             except Exception as e:
                 # Heuristic: if it's a 429 or rate-related, back off and retry
                 msg = str(e).lower()
                 if "429" in msg or "too many" in msg or "rate" in msg:
-                    self.logger.warning(f"TIDAL rate limited (attempt {attempt}/{max_retries}); backing off…")
+                    self.logger.warning(
+                        f"TIDAL rate limited (attempt {attempt}/{max_retries}); backing off…"
+                    )
                     time.sleep(delay + random.uniform(0, 0.5))
                     delay = min(10.0, delay * 2)
                     continue
                 # Other errors: log and break
                 self.logger.exception("TIDAL search failed")
                 break
-        
+
         return []
 
     def search_by_isrc(self, isrc: str) -> List[tidalapi.media.Track]:
@@ -472,7 +480,7 @@ class Tidal:
         # Use normalized forms for search queries; keep originals for scoring/display
         search_name = self._normalize_text(name)
         candidates: List[tidalapi.media.Track] = []
-        
+
         # Gather all candidates from multiple search strategies for best quality selection
         if isrc:
             candidates = self.search_by_isrc(isrc)
@@ -487,10 +495,12 @@ class Tidal:
                 candidates.extend(name_artist_candidates)
         # Try including album keyword to disambiguate
         if not candidates and album:
-            more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
+            more = self._search_tracks(
+                f"{search_name} {self._normalize_text(album)}", limit=25
+            )
             if more:
                 candidates.extend(more)
-        
+
         # de-duplicate by id
         seen = set()
         uniq = []
@@ -536,14 +546,17 @@ class Tidal:
         exact_title = self._normalize_text(name) == self._normalize_text(
             getattr(best_track, "name", "") or getattr(best_track, "full_name", "")
         )
-        duration_close = self._duration_score(
-            duration_ms, getattr(best_track, "duration", None)
-        ) >= 20
+        duration_close = (
+            self._duration_score(duration_ms, getattr(best_track, "duration", None))
+            >= 20
+        )
         threshold = 30
         if exact_title and duration_close:
             threshold = 15
         if best_score < threshold:
-            self.logger.info(f"Best score {best_score} below threshold {threshold}; no match")
+            self.logger.info(
+                f"Best score {best_score} below threshold {threshold}; no match"
+            )
             return None
 
         self.logger.info(f"Best match score {best_score}: {best_track}")
@@ -557,7 +570,9 @@ class Tidal:
         try:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                return self.session.user.create_playlist(title=name, description=description)
+                return self.session.user.create_playlist(
+                    title=name, description=description
+                )
         except Exception as e:
             self.logger.exception(f"Failed to create TIDAL playlist {name}: {e}")
             return None

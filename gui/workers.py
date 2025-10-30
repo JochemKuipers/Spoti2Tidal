@@ -32,6 +32,7 @@ class RunnableTask(QRunnable):
 
     def run(self):
         try:
+
             def _callable_name(c: Callable[..., Any]) -> str:
                 # Try simple function/method name
                 name = getattr(c, "__name__", None)
