@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spoti2tidal"
+version = "0.1.0"
+description = "Sync your Spotify playlists to TIDAL."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "pyqt6-sip",
+  "spotipy",
+  "tidalapi",
+  "PyQt6",
+  "platformdirs",
+  "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "black",
+  "mypy",
+  "build",
+  "pyinstaller",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+lint.select = ["E", "F", "I", "B", "UP"]
+lint.ignore = ["E731"]
+exclude = ["__pycache__", ".venv", ".git", "build", "dist"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+pretty = true
+
+

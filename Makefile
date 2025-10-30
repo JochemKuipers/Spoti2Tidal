@@ -6,10 +6,10 @@ PIP ?= $(PY) -m pip
 help:
 	@echo "Available targets:"
 	@echo "  install       Install runtime dependencies"
-	@echo "  dev-install   Install dev tools (ruff, pyinstaller)"
+	@echo "  dev-install   Install dev tools (ruff, black, mypy, pyinstaller)"
 	@echo "  run           Run application"
-	@echo "  lint          Lint code with ruff"
-	@echo "  format        Format code with ruff"
+	@echo "  lint          Run ruff, black --check, and mypy"
+	@echo "  format        Format code with black and ruff"
 	@echo "  clean         Remove build/cache artifacts"
 
 install:
@@ -17,7 +17,7 @@ install:
 
 dev-install: install
 	$(PIP) install -U pip
-	$(PIP) install ruff pyinstaller
+	$(PIP) install ruff black mypy pyinstaller
 
 run:
 	$(PY) -m main
@@ -27,8 +27,11 @@ build:
 
 lint:
 	ruff check .
+	black --check .
+	mypy .
 
 format:
+	black .
 	ruff format .
 
 clean:

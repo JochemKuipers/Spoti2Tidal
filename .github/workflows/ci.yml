@@ -1,0 +1,68 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    build:
+        name: Lint, Type-Check, Sanity
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, windows-latest]
+                python-version: ["3.11", "3.12", "3.13"]
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: ${{ matrix.python-version }}
+                  cache: "pip"
+
+            - name: Upgrade pip
+              run: python -m pip install --upgrade pip
+
+            - name: Install tooling
+              run: pip install ruff black mypy build
+
+            - name: Install dependencies
+              run: |
+                  if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              shell: bash
+
+            - name: Ruff
+              run: ruff check .
+
+            - name: Black (check)
+              run: black --check .
+
+            - name: Mypy
+              run: mypy .
+
+            - name: Byte-compile
+              run: python -m compileall -q .
+
+            - name: Import smoke test
+              run: |
+                  python - <<'PY'
+                  import importlib
+                  modules = [
+                      "main",
+                      "services.spotify",
+                      "services.tidal",
+                      "gui.main_window",
+                  ]
+                  for m in modules:
+                      try:
+                          importlib.import_module(m)
+                          print(f"Imported: {m}")
+                      except Exception as e:
+                          raise SystemExit(f"Failed to import {m}: {e}")
+                  PY
