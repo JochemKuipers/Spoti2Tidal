@@ -1,18 +1,21 @@
 from __future__ import annotations
-import spotipy
-import spotipy.oauth2
-from PyQt6.QtCore import QThread, pyqtSignal
+
+import logging
 import math
+import os
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from platformdirs import user_config_dir
-import os
+from typing import Any
+
+import spotipy
+import spotipy.oauth2
 from dotenv import load_dotenv
-from typing import Any, List
-import logging
+from platformdirs import user_config_dir
+from PyQt6.QtCore import QThread, pyqtSignal
+
 from models.spotify import SpotifyPlaylist, SpotifyTrack
-import time
-import random
 
 load_dotenv()
 
@@ -102,11 +105,14 @@ class Spotify:
             self.market = user["country"] or "NL"
         return user
 
-    def get_user_playlists(self, progress_callback=None) -> List[SpotifyPlaylist]:
+    def get_user_playlists(self, progress_callback=None) -> list[SpotifyPlaylist]:
         self.logger.info("Fetching Spotify user playlists")
         playlists = []
         response = self.sp.current_user_playlists()
-        total = response.get("total", 0) or 0
+        if response is None:
+            self.logger.error("Failed to fetch Spotify user playlists")
+            return []
+        total = response.get("total", 0)
 
         # Get current user id
         self.logger.info("Fetching current Spotify user")
@@ -119,28 +125,31 @@ class Spotify:
         self.logger.info(f"First page items: {page_items}")
         if current_user_id:
             page_items = [
-                pl
-                for pl in page_items
-                if pl.get("owner", {}).get("id") == current_user_id
+                pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
             ]
         playlists.extend(page_items)
         self.logger.info(f"Playlists after first page: {playlists}")
         if progress_callback and total > 0:
             self.logger.debug(
-                f"Progress callback: {progress_callback(min(99, int(len(playlists) / total * 100)))}"
+                f"Progress callback: "
+                f"{progress_callback(min(99, int(len(playlists) / total * 100)))}"
             )
             progress_callback(min(99, int(len(playlists) / total * 100)))
 
         # paginate
         while response.get("next"):
             response = self.sp.next(response)
+            if response is None:
+                self.logger.error("Failed to fetch next page of Spotify user playlists")
+                break
             page_items = response.get("items", [])
+            if page_items is None:
+                self.logger.error("Failed to fetch items from next page of Spotify user playlists")
+                break
             self.logger.info(f"Page items: {page_items}")
             if current_user_id:
                 page_items = [
-                    pl
-                    for pl in page_items
-                    if pl.get("owner", {}).get("id") == current_user_id
+                    pl for pl in page_items if pl.get("owner", {}).get("id") == current_user_id
                 ]
             playlists.extend(page_items)
             self.logger.debug(f"Playlists after pagination: {playlists}")
@@ -154,11 +163,14 @@ class Spotify:
 
     def get_playlist_tracks(
         self, playlist_id, max_workers=5, progress_callback=None
-    ) -> List[SpotifyTrack]:
+    ) -> list[SpotifyTrack]:
         self.logger.info(f"Fetching Spotify tracks for playlist {playlist_id}")
         response = self.sp.playlist_items(playlist_id)
+        if response is None:
+            self.logger.error("Failed to fetch Spotify playlist tracks")
+            return []
         self.logger.info(f"Response: {response}")
-        total = response["total"]
+        total = response.get("total", 0)
 
         batch_size = 50
         num_batches = math.ceil(total / batch_size)
@@ -175,12 +187,16 @@ class Spotify:
                     res = self.sp.playlist_items(
                         playlist_id, limit=50, offset=offset, market=self.market
                     )
-                    return offset, res["items"], None
+                    if res is None:
+                        self.logger.error("Failed to fetch Spotify playlist tracks")
+                        return offset, [], "response is None"
+                    return offset, res.get("items", []), None
                 except Exception as e:
                     msg = str(e).lower()
                     if "429" in msg or "too many" in msg or "rate" in msg:
                         self.logger.warning(
-                            f"Spotify rate limited on offset {offset} (attempt {attempt}/{max_retries}); backing off…"
+                            f"Spotify rate limited on offset {offset} "
+                            f"(attempt {attempt}/{max_retries}); backing off…"
                         )
                         time.sleep(delay + random.uniform(0, 0.25))
                         delay = min(8.0, delay * 2)
@@ -219,15 +235,13 @@ class Spotify:
 
         return tracks
 
-    def get_user_tracks(
-        self, max_workers=5, progress_callback=None
-    ) -> List[SpotifyTrack]:
+    def get_user_tracks(self, max_workers=5, progress_callback=None) -> list[SpotifyTrack]:
         self.logger.info("Fetching Spotify saved tracks")
-        response = self.sp.current_user_saved_tracks(
-            limit=50, offset=0, market=self.market
-        )
-        total = response["total"]
-
+        response = self.sp.current_user_saved_tracks(limit=50, offset=0, market=self.market)
+        if response is None:
+            self.logger.error("Failed to fetch Spotify saved tracks")
+            return []
+        total = response.get("total", 0)
         batch_size = 50
         num_batches = math.ceil(total / batch_size)
         results = {}
@@ -237,7 +251,10 @@ class Spotify:
                 response = self.sp.current_user_saved_tracks(
                     limit=50, offset=offset, market=self.market
                 )
-                return offset, response["items"], None
+                if response is None:
+                    self.logger.error("Failed to fetch Spotify saved tracks")
+                    return offset, [], "response is None"
+                return offset, response.get("items", []), None
             except Exception as e:
                 self.logger.exception("Failed to fetch Spotify saved tracks batch")
                 return offset, [], str(e)
@@ -274,5 +291,9 @@ class Spotify:
 
         return tracks
 
-    def get_playlist(self, playlist_id) -> SpotifyPlaylist:
-        return self.sp.playlist(playlist_id)
+    def get_playlist(self, playlist_id) -> SpotifyPlaylist | None:
+        response = self.sp.playlist(playlist_id)
+        if response is None:
+            self.logger.error("Failed to fetch Spotify playlist")
+            return None
+        return SpotifyPlaylist.from_api(response)

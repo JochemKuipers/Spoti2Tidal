@@ -35,9 +35,7 @@ class SpotifyTrack:
         self.available_markets = available_markets  # List of strings
         self.disc_number = disc_number
         self.duration_ms = duration_ms
-        self._explicit = (
-            explicit  # Store as private variable to avoid conflict with property
-        )
+        self._explicit = explicit  # Store as private variable to avoid conflict with property
         self.external_ids = external_ids
         self._external_urls = external_urls  # Store as private variable
         self.href = href
@@ -54,26 +52,25 @@ class SpotifyTrack:
         """
         Build SpotifyTrack from a Spotify track dict (as from API).
         """
-        track = track_obj["track"]
         return cls(
-            id=track.get("id"),
-            name=track.get("name"),
-            artists=track.get("artists"),  # List of dicts
-            album=track.get("album"),
-            available_markets=track.get("available_markets"),
-            disc_number=track.get("disc_number"),
-            duration_ms=track.get("duration_ms"),
-            explicit=track.get("explicit"),
-            external_ids=track.get("external_ids"),
-            external_urls=track.get("external_urls"),
-            href=track.get("href"),
-            is_local=track.get("is_local"),
-            is_playable=track.get("is_playable"),
-            popularity=track.get("popularity"),
-            preview_url=track.get("preview_url"),
-            track_number=track.get("track_number"),
-            type_=track.get("type"),
-            uri=track.get("uri"),
+            id=track_obj.get("id"),
+            name=track_obj.get("name"),
+            artists=track_obj.get("artists"),  # List of dicts
+            album=track_obj.get("album"),
+            available_markets=track_obj.get("available_markets"),
+            disc_number=track_obj.get("disc_number"),
+            duration_ms=track_obj.get("duration_ms"),
+            explicit=track_obj.get("explicit"),
+            external_ids=track_obj.get("external_ids"),
+            external_urls=track_obj.get("external_urls"),
+            href=track_obj.get("href"),
+            is_local=track_obj.get("is_local"),
+            is_playable=track_obj.get("is_playable"),
+            popularity=track_obj.get("popularity"),
+            preview_url=track_obj.get("preview_url"),
+            track_number=track_obj.get("track_number"),
+            type_=track_obj.get("type"),
+            uri=track_obj.get("uri"),
         )
 
     @property
@@ -127,14 +124,14 @@ class SpotifyPlaylist:
         type_,
         uri,
     ):
-        self.id = id
+        self._id = id
         self.name = name
         self.tracks = tracks
         self.collaborative = collaborative
         self.description = description
-        self.external_urls = external_urls
+        self._external_urls = external_urls
         self.href = href
-        self.images = images
+        self._images = images
         self.owner = owner
         self.primary_color = primary_color
         self.public = public
@@ -167,12 +164,12 @@ class SpotifyPlaylist:
 
     @property
     def images(self):
-        return self.images
+        return self._images
 
     @property
     def external_urls(self):
-        return self.external_urls
+        return self._external_urls
 
     @property
     def id(self):
-        return self.id
+        return self._id
