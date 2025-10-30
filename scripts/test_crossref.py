@@ -1,14 +1,16 @@
 from __future__ import annotations
-
 import logging
 import sys
 from urllib.parse import urlparse
 
-from logging_config import setup_logging
 from services.spotify import Spotify
 from services.tidal import Tidal
+from logging_config import setup_logging
 
-SPOTIFY_TRACK_URL = "https://open.spotify.com/track/5iSEY9x2UHbDArz4NmlGTZ?si=46c86070ff894e59"
+
+SPOTIFY_TRACK_URL = (
+    "https://open.spotify.com/track/5iSEY9x2UHbDArz4NmlGTZ?si=46c86070ff894e59"
+)
 
 
 def extract_spotify_id(url: str) -> str | None:
@@ -41,20 +43,25 @@ def main():
     duration_ms = sp_track.get("duration_ms")
     isrc = (sp_track.get("external_ids", {}) or {}).get("isrc")
 
-    print(f"Spotify track: {name} — {artists} | ISRC: {isrc} | duration_ms: {duration_ms}")
+    print(
+        f"Spotify track: {name} — {artists} | ISRC: {isrc} | duration_ms: {duration_ms}"
+    )
 
     # Ensure TIDAL login if possible
     td.ensure_logged_in()
 
     # Try resolve best match
-    best = td.resolve_best_match(isrc=isrc, name=name, artists=artists, duration_ms=duration_ms)
+    best = td.resolve_best_match(
+        isrc=isrc, name=name, artists=artists, duration_ms=duration_ms
+    )
     if best:
         td_name = getattr(best, "name", "") or getattr(best, "full_name", "")
-        td_artists = ", ".join(getattr(a, "name", "") for a in (getattr(best, "artists", []) or []))
+        td_artists = ", ".join(
+            getattr(a, "name", "") for a in (getattr(best, "artists", []) or [])
+        )
         td_quality = Tidal.quality_label(best)
         print(
-            f"TIDAL match: {td_name} — {td_artists} | quality: {td_quality} | "
-            f"id: {getattr(best, 'id', '')}"
+            f"TIDAL match: {td_name} — {td_artists} | quality: {td_quality} | id: {getattr(best, 'id', '')}"
         )
     else:
         print("No TIDAL match found.")

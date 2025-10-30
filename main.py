@@ -1,38 +1,48 @@
 from __future__ import annotations
-
+import sys
 import argparse
 import logging
-import sys
-
 from PyQt6.QtWidgets import QApplication
-
 from gui.main_window import MainWindow
 from logging_config import setup_logging
-from models.spotify import SpotifyTrack
 from services.spotify import Spotify
 from services.tidal import Tidal
+from typing import List, Dict, Any
 
 
-def _match_spotify_items_to_tidal_ids(td: Tidal, items: list[SpotifyTrack]) -> list[str]:
-    matched_ids: list[str] = []
+def _match_spotify_items_to_tidal_ids(
+    td: Tidal, items: List[Dict[str, Any]]
+) -> List[int]:
+    matched_ids: List[int] = []
     total = len(items)
-    for idx, it in enumerate[SpotifyTrack](items, start=1):
+    for idx, it in enumerate(items, start=1):
+        sp_track = it.get("track") or {}
+        sp_name = sp_track.get("name")
+        sp_artists = sp_track.get("artists") or []
+        sp_dur = sp_track.get("duration_ms")
+        sp_isrc = (sp_track.get("external_ids") or {}).get("isrc")
+        sp_album = (sp_track.get("album") or {}).get("name")
+
         best = td.resolve_best_match(
-            isrc=it.external_ids.get("isrc"),
-            name=it.name,
-            artists=it.artists_names,
-            duration_ms=it.duration_ms,
-            album=it.album_name,
+            isrc=sp_isrc,
+            name=sp_name,
+            artists=sp_artists,
+            duration_ms=sp_dur,
+            album=sp_album,
         )
         if best is not None:
-            matched_ids.append(getattr(best, "id", ""))
+            tid = getattr(best, "id", None)
+            if tid is not None:
+                matched_ids.append(int(tid))
         if idx % 50 == 0 or idx == total:
             print(f"  Matched {len(matched_ids)}/{total} tracks…")
     print(f"  Final matches: {len(matched_ids)}/{total}")
     return matched_ids
 
 
-def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose: bool) -> int:
+def run_cli(
+    dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose: bool
+) -> int:
     """Run the headless CLI flow.
 
     - Always fetch Spotify playlists and resolve TIDAL matches
@@ -77,8 +87,8 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
             print("No Spotify playlists found for this user.")
         else:
             for pl in playlists:
-                pid = pl.id
-                name = pl.name or pid
+                pid = pl.get("id")
+                name = pl.get("name") or pid
                 print(f"Processing playlist: {name}")
                 try:
                     items = sp.get_playlist_tracks(pid)
@@ -89,11 +99,15 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
                 matched_ids = _match_spotify_items_to_tidal_ids(td, items)
 
                 if dry_run:
-                    print("  Dry-run enabled: not creating TIDAL playlist or adding tracks.")
+                    print(
+                        "  Dry-run enabled: not creating TIDAL playlist or adding tracks."
+                    )
                     continue
 
                 if matched_ids:
-                    created = td.create_playlist(name, description="Synced from Spotify")
+                    created = td.create_playlist(
+                        name, description="Synced from Spotify"
+                    )
                     if not created:
                         print("  Failed to create TIDAL playlist; skipping.")
                         continue
@@ -103,7 +117,9 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
                         continue
                     ok = td.add_tracks_to_playlist(tpid, matched_ids)
                     if ok:
-                        print(f"  Added {len(matched_ids)} tracks to TIDAL playlist '{name}'.")
+                        print(
+                            f"  Added {len(matched_ids)} tracks to TIDAL playlist '{name}'."
+                        )
                         overall_added += len(matched_ids)
                     else:
                         print("  Failed to add tracks to TIDAL playlist.")

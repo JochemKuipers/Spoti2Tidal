@@ -1,16 +1,14 @@
-import logging
-import random
-import re
-import time
-import webbrowser
 from pathlib import Path
-from threading import Lock
-
+import webbrowser
 import tidalapi
 from platformdirs import user_config_dir
 from PyQt6.QtCore import QThread, pyqtSignal
-from tidalapi.playlist import Playlist, UserPlaylist
-from tidalapi.user import FetchedUser, LoggedInUser, PlaylistCreator
+from typing import List, Optional
+import logging
+import re
+import time
+import random
+from threading import Lock
 
 DEFAULT_SESSION_DIR = Path(user_config_dir("Spoti2Tidal"))
 DEFAULT_SESSION_FILE = DEFAULT_SESSION_DIR / "tidal_session.json"
@@ -58,7 +56,9 @@ class TidalPlaylistFetchWorker(QThread):
 
     def run(self):
         try:
-            playlists = self.tidal_session.user.playlists(limit=self.limit, offset=self.offset)
+            playlists = self.tidal_session.user.playlists(
+                limit=self.limit, offset=self.offset
+            )
             self.finished.emit(playlists, self.offset)
         except Exception as e:
             self.error.emit(str(e), self.offset)
@@ -72,8 +72,6 @@ class Tidal:
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
         self._load_session_silent()
-
-        self.user: LoggedInUser | FetchedUser | PlaylistCreator = self.session.get_user().factory()
 
     def _load_session_silent(self) -> bool:
         try:
@@ -100,8 +98,7 @@ class Tidal:
         )
         self.logger.info(url)
         self.logger.info(
-            "After logging in, you'll land on an 'Oops' page. Copy that page's full URL and "
-            "provide it to complete login."
+            "After logging in, you'll land on an 'Oops' page. Copy that page's full URL and provide it to complete login."
         )
         return url
 
@@ -116,7 +113,9 @@ class Tidal:
         try:
             self.session.save_session_to_file(self.session_file)
         except Exception as e:
-            self.logger.error(f"Failed to save TIDAL session to {self.session_file}: {e}")
+            self.logger.error(
+                f"Failed to save TIDAL session to {self.session_file}: {e}"
+            )
 
     def load_tokens(self) -> bool:
         return self._load_session_silent()
@@ -143,15 +142,14 @@ class Tidal:
     def get_user(self):
         return self.session.user
 
-    def get_user_playlists(self, progress_callback=None) -> list[Playlist | UserPlaylist]:
+    def get_user_playlists(
+        self, progress_callback=None
+    ) -> List[tidalapi.playlist.UserPlaylist]:
         self.logger.info("Fetching TIDAL user playlists")
         try:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                if isinstance(self.user, tidalapi.user.LoggedInUser):
-                    playlists = self.user.playlists()
-                else:
-                    playlists = []
+                playlists = self.session.user.playlists()
         except Exception:
             playlists = []
         if progress_callback:
@@ -160,16 +158,13 @@ class Tidal:
 
     def get_user_tracks(
         self, progress_callback=None, page_limit: int = 100
-    ) -> list[tidalapi.media.Track]:
+    ) -> List[tidalapi.media.Track]:
         self.logger.info("Fetching TIDAL user tracks")
         tracks = []
         try:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                if isinstance(self.user, tidalapi.user.LoggedInUser):
-                    total = self.user.favorites.get_tracks_count()
-                else:
-                    total = 0
+                total = self.session.user.favorites.get_tracks_count()
         except Exception:
             self.logger.exception("Failed to fetch TIDAL user favorites count")
             total = 0
@@ -178,10 +173,9 @@ class Tidal:
         while True:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                if isinstance(self.user, tidalapi.user.LoggedInUser):
-                    page = self.user.favorites.tracks(limit=page_limit, offset=offset)
-                else:
-                    page = []
+                page = self.session.user.favorites.tracks(
+                    limit=page_limit, offset=offset
+                )
             if not page:
                 break
             tracks.extend(page)
@@ -196,7 +190,7 @@ class Tidal:
         self.logger.info(f"Fetched {len(tracks)} TIDAL user tracks")
         return tracks
 
-    def get_playlist(self, playlist_id) -> Playlist | UserPlaylist:
+    def get_playlist(self, playlist_id) -> tidalapi.playlist.UserPlaylist:
         self.logger.info(f"Fetching TIDAL playlist {playlist_id}")
         with _TIDAL_API_LOCK:
             time.sleep(_TIDAL_API_DELAY)
@@ -204,7 +198,7 @@ class Tidal:
 
     def get_playlist_tracks(
         self, playlist_id, progress_callback=None, page_limit: int = 100
-    ) -> list[tidalapi.media.Track]:
+    ) -> List[tidalapi.media.Track]:
         self.logger.info(f"Fetching TIDAL playlist tracks {playlist_id}")
         with _TIDAL_API_LOCK:
             time.sleep(_TIDAL_API_DELAY)
@@ -243,7 +237,7 @@ class Tidal:
             return self.session.track(track_id)
 
     # ---- search & matching helpers ----
-    def _search_tracks(self, query: str, limit: int = 25) -> list[tidalapi.media.Track]:
+    def _search_tracks(self, query: str, limit: int = 25) -> List[tidalapi.media.Track]:
         self.logger.debug(f"Searching TIDAL for tracks: {query}")
 
         max_retries = 3
@@ -266,7 +260,9 @@ class Tidal:
                     tracks = results.get("tracks") or []
                 else:
                     tracks = getattr(results, "tracks", []) or []
-                self.logger.debug(f"Found {len(tracks)} TIDAL tracks for search: {query}")
+                self.logger.debug(
+                    f"Found {len(tracks)} TIDAL tracks for search: {query}"
+                )
                 return tracks
             except Exception as e:
                 # Heuristic: if it's a 429 or rate-related, back off and retry
@@ -284,7 +280,7 @@ class Tidal:
 
         return []
 
-    def search_by_isrc(self, isrc: str) -> list[tidalapi.media.Track]:
+    def search_by_isrc(self, isrc: str) -> List[tidalapi.media.Track]:
         self.logger.debug(f"Searching TIDAL for tracks by ISRC: {isrc}")
         if not isrc:
             return []
@@ -295,7 +291,7 @@ class Tidal:
         self.logger.debug(f"Found {len(exact)} exact TIDAL tracks for ISRC: {isrc}")
         return exact or candidates
 
-    def search_by_name(self, name: str) -> list[tidalapi.media.Track]:
+    def search_by_name(self, name: str) -> List[tidalapi.media.Track]:
         self.logger.debug(f"Searching TIDAL for tracks by name: {name}")
         if not name:
             return []
@@ -303,30 +299,27 @@ class Tidal:
         self.logger.debug(f"Found {len(tracks)} TIDAL tracks for name: {name}")
         return tracks
 
-    def search_by_name_artist(self, name: str, artists: list | str) -> list[tidalapi.media.Track]:
-        self.logger.debug(f"Searching TIDAL for tracks by name and artist(s): {name} | {artists}")
+    def search_by_name_artist(
+        self, name: str, artists: list | str
+    ) -> List[tidalapi.media.Track]:
+        self.logger.debug(
+            f"Searching TIDAL for tracks by name and artist(s): {name} | {artists}"
+        )
         if not name:
             return []
         if not artists:
             return self._search_tracks(name, limit=25)
 
-        # Normalize artists to a list[str]
+        # Normalize artists to a list of strings
         if isinstance(artists, str):
-            artists_list: list[str] = [artists.strip()] if artists.strip() else []
+            artists_list = [artists]
         else:
-            artists_list = []
-            for a in artists:
-                if isinstance(a, dict):
-                    name = a.get("name") or ""
-                    name_str = name.strip() if isinstance(name, str) else ""
-                elif isinstance(a, str):
-                    name_str = a.strip()
-                else:
-                    name_str = str(a).strip()
-                if name_str:
-                    artists_list.append(name_str)
+            artists_list = [
+                a.get("name") if isinstance(a, dict) else a.strip() for a in artists
+            ]
+        artists_list = [a for a in artists_list if a]  # remove empty
 
-        all_results: list[tidalapi.media.Track] = []
+        all_results: List[tidalapi.media.Track] = []
         seen_ids = set()
 
         # 1. Perform one query for each single artist
@@ -340,8 +333,7 @@ class Tidal:
                 seen_ids.add(tid)
                 all_results.append(t)
 
-        # 2. Also perform a query with all artists together (if more than one),
-        # e.g. "name artist1 artist2 ..."
+        # 2. Also perform a query with all artists together (if more than one), e.g. "name artist1 artist2 ..."
         if len(artists_list) > 1:
             combined_artists = " ".join(artists_list)
             sub_query = f"{name} {combined_artists}"
@@ -354,8 +346,7 @@ class Tidal:
                 all_results.append(t)
 
         self.logger.debug(
-            f"Found {len(all_results)} TIDAL tracks across progressive artist queries for: "
-            f"{name} | {artists}"
+            f"Found {len(all_results)} TIDAL tracks across progressive artist queries for: {name} | {artists}"
         )
         return all_results
 
@@ -377,7 +368,9 @@ class Tidal:
             return "Lossless"
         return "Lossy"
 
-    def pick_best_quality(self, tracks: list[tidalapi.media.Track]) -> tidalapi.media.Track | None:
+    def pick_best_quality(
+        self, tracks: List[tidalapi.media.Track]
+    ) -> Optional[tidalapi.media.Track]:
         self.logger.info(f"Picking best quality track from {len(tracks)} tracks")
         if not tracks:
             return None
@@ -395,12 +388,13 @@ class Tidal:
     @staticmethod
     def _normalize_text(text: str) -> str:
         try:
-            # Only strip feat/with patterns,
-            # don't remove content in parentheses/brackets unconditionally
+            # Only strip feat/with patterns, don't remove content in parentheses/brackets unconditionally
             text = re.sub(
                 r"\s*[\[(]\s*(feat\.?|with\.?)\s.*?[])]", "", text, flags=re.IGNORECASE
             ).strip()
-            text = re.sub(r"\s+(feat\.?|with\.?)\s.*$", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(
+                r"\s+(feat\.?|with\.?)\s.*$", "", text, flags=re.IGNORECASE
+            ).strip()
         except Exception as e:
             logging.getLogger(__name__).error(f"Error cleaning name: {e}")
             raise e
@@ -411,7 +405,7 @@ class Tidal:
         return set(Tidal._normalize_text(text).split())
 
     @staticmethod
-    def _duration_score(sp_ms: int | None, td_seconds: int | None) -> int:
+    def _duration_score(sp_ms: Optional[int], td_seconds: Optional[int]) -> int:
         if not sp_ms or td_seconds is None:
             return 0
         sp_s = int(round(sp_ms / 1000))
@@ -448,7 +442,9 @@ class Tidal:
             return 0
         if isinstance(sp_artists, list):
             try:
-                names = [(a if isinstance(a, str) else a.get("name", "")) for a in sp_artists]
+                names = [
+                    (a if isinstance(a, str) else a.get("name", "")) for a in sp_artists
+                ]
                 sp_joined = ", ".join([n for n in names if n])
             except Exception:
                 sp_joined = ""
@@ -472,24 +468,24 @@ class Tidal:
     def resolve_best_match(
         self,
         *,
-        isrc: str | None,
+        isrc: Optional[str],
         name: str,
-        artists: list | str | None,
-        duration_ms: int | None = None,
-        album: str | None = None,
-    ) -> tidalapi.media.Track | None:
+        artists: Optional[list | str],
+        duration_ms: Optional[int] = None,
+        album: Optional[str] = None,
+    ) -> Optional[tidalapi.media.Track]:
         self.logger.debug(
             f"Resolving best match for ISRC: {isrc}, name: {name}, artists: {artists}"
         )
         # Use normalized forms for search queries; keep originals for scoring/display
         search_name = self._normalize_text(name)
-        candidates: list[tidalapi.media.Track] = []
+        candidates: List[tidalapi.media.Track] = []
 
         # Gather all candidates from multiple search strategies for best quality selection
         if isrc:
             candidates = self.search_by_isrc(isrc)
         # Always include name-based candidates
-        name_candidates: list[tidalapi.media.Track] = self.search_by_name(search_name)
+        name_candidates: List[tidalapi.media.Track] = self.search_by_name(search_name)
         if name_candidates:
             candidates.extend(name_candidates)
         # Always include name+artist candidates when artist is available
@@ -499,7 +495,9 @@ class Tidal:
                 candidates.extend(name_artist_candidates)
         # Try including album keyword to disambiguate
         if not candidates and album:
-            more = self._search_tracks(f"{search_name} {self._normalize_text(album)}", limit=25)
+            more = self._search_tracks(
+                f"{search_name} {self._normalize_text(album)}", limit=25
+            )
             if more:
                 candidates.extend(more)
 
@@ -549,13 +547,16 @@ class Tidal:
             getattr(best_track, "name", "") or getattr(best_track, "full_name", "")
         )
         duration_close = (
-            self._duration_score(duration_ms, getattr(best_track, "duration", None)) >= 20
+            self._duration_score(duration_ms, getattr(best_track, "duration", None))
+            >= 20
         )
         threshold = 30
         if exact_title and duration_close:
             threshold = 15
         if best_score < threshold:
-            self.logger.info(f"Best score {best_score} below threshold {threshold}; no match")
+            self.logger.info(
+                f"Best score {best_score} below threshold {threshold}; no match"
+            )
             return None
 
         self.logger.info(f"Best match score {best_score}: {best_track}")
@@ -564,24 +565,26 @@ class Tidal:
     # ---- playlist management ----
     def create_playlist(
         self, name: str, description: str = ""
-    ) -> tidalapi.playlist.UserPlaylist | None:
+    ) -> Optional[tidalapi.playlist.UserPlaylist]:
         self.logger.info(f"Creating TIDAL playlist: {name}")
         try:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                if isinstance(self.user, tidalapi.user.LoggedInUser):
-                    return self.user.create_playlist(title=name, description=description)
-                return None
+                return self.session.user.create_playlist(
+                    title=name, description=description
+                )
         except Exception as e:
             self.logger.exception(f"Failed to create TIDAL playlist {name}: {e}")
             return None
 
-    def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> bool:
-        self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL playlist {playlist_id}")
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
+        self.logger.info(
+            f"Adding {len(track_ids)} tracks to TIDAL playlist {playlist_id}"
+        )
         try:
             with _TIDAL_API_LOCK:
                 time.sleep(_TIDAL_API_DELAY)
-                playlist: Playlist | UserPlaylist = self.session.playlist(playlist_id)
+                playlist = self.session.playlist(playlist_id)
             if not track_ids:
                 return True
             # TIDAL API supports adding in batches
@@ -590,21 +593,18 @@ class Tidal:
                 batch = track_ids[i : i + batch_size]
                 with _TIDAL_API_LOCK:
                     time.sleep(_TIDAL_API_DELAY)
-                    if isinstance(playlist, tidalapi.playlist.UserPlaylist):
-                        playlist.add(batch)
+                    playlist.add(batch)
             return True
         except Exception as e:
             self.logger.exception(f"Failed to add tracks to TIDAL playlist: {e}")
             return False
 
-    def add_tracks_to_favorites(self, track_ids: list[str]) -> bool:
+    def add_tracks_to_favorites(self, track_ids: List[int | str]) -> bool:
         self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL favorites")
         try:
             if not track_ids:
                 return True
-            favorites = (
-                self.user.favorites if isinstance(self.user, tidalapi.user.LoggedInUser) else None
-            )
+            favorites = self.session.user.favorites
             # The installed tidalapi supports add_track(list[str]|str)
             # Batch to avoid overly long requests
             batch_size = 100
@@ -612,15 +612,16 @@ class Tidal:
                 batch = [str(int(t)) for t in track_ids[i : i + batch_size]]
                 with _TIDAL_API_LOCK:
                     time.sleep(_TIDAL_API_DELAY)
-                    if isinstance(favorites, tidalapi.user.Favorites):
-                        favorites.add_track(batch)
+                    favorites.add_track(batch)
             return True
         except Exception as e:
             self.logger.exception(f"Failed to add tracks to TIDAL favorites: {e}")
             return False
 
-    def get_playlist_track_ids(self, playlist_id: str) -> list[int]:
-        self.logger.info(f"Fetching TIDAL playlist track IDs for playlist {playlist_id}")
+    def get_playlist_track_ids(self, playlist_id: str) -> List[int]:
+        self.logger.info(
+            f"Fetching TIDAL playlist track IDs for playlist {playlist_id}"
+        )
         try:
             tracks = self.get_playlist_tracks(playlist_id)
             return [int(getattr(t, "id", -1)) for t in tracks if getattr(t, "id", None)]
