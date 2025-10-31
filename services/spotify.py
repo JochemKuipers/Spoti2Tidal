@@ -179,7 +179,7 @@ class Spotify:
 
         def fetch_batch(offset):
             delay = 0.5
-            max_retries = 4
+            max_retries = 5
             for attempt in range(1, max_retries + 1):
                 try:
                     # Gentle pacing to reduce burst traffic
