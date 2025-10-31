@@ -724,12 +724,26 @@ class MainWindow(QMainWindow):
         elif not st.started:
             # Not started yet, start the full sync process (fetch + match)
             self._start_playlist_sync(playlist_id)
-        # If started but tracks not yet loaded, matching will start automatically when fetch completes
+        # If started but tracks not yet loaded,
+        # matching will start automatically when fetch completes
 
     def _match_all_playlists(self):
-        """Manually trigger matching for all playlists."""
-        for playlist_id in self.playlists.keys():
-            self._match_playlist(playlist_id)
+        """Manually trigger matching for all playlists sequentially."""
+        # Use a queue to process playlists one at a time (fetch then match)
+        playlist_ids = list(self.playlists.keys())
+        if not playlist_ids:
+            return
+
+        # Reset queue and start processing
+        self.processing_queue = []
+        for pid in playlist_ids:
+            st = self.playlists.get(pid)
+            if st and not st.completed:
+                self.processing_queue.append(pid)
+
+        # Start processing first playlist
+        if self.processing_queue:
+            self._start_next_matching_playlist()
 
     # ---- transfer to TIDAL ----
     def _transfer_to_tidal(self, playlist_id: str):
@@ -872,11 +886,61 @@ class MainWindow(QMainWindow):
 
         st.widgets_built = True
 
+    def _start_next_matching_playlist(self):
+        """Start matching the next playlist in the queue."""
+        if not self.processing_queue:
+            return
+
+        next_id = self.processing_queue.pop(0)
+        st = self.playlists.get(next_id)
+        if not st:
+            # Skip missing playlists and continue
+            self._start_next_matching_playlist()
+            return
+
+        # If tracks aren't loaded yet, fetch them first
+        if not st.tracks:
+            # Fetch tracks, then match them
+            def on_fetch_done(items: list[dict]):
+                # Convert raw Spotify API items to TrackState objects
+                st.tracks = []
+                for idx, it in enumerate(items):
+                    tstate = TrackState(
+                        index=idx,
+                        sp_item=it,
+                    )
+                    st.tracks.append(tstate)
+
+                self._build_track_view_for_playlist(next_id, st)
+                self._start_matching_for_playlist(next_id, st)
+
+            def on_fetch_progress(pct):
+                st.progress_bar.setValue(pct)
+
+            run_in_background(
+                self.fetch_pool,
+                functools.partial(self.spotify.get_playlist_tracks, next_id),
+                on_done=on_fetch_done,
+                on_error=lambda e: self._start_next_matching_playlist(),
+                on_progress=on_fetch_progress,
+            )
+        else:
+            # Tracks already loaded, just start matching
+            if not st.widgets_built:
+                self._build_track_view_for_playlist(next_id, st)
+            self._start_matching_for_playlist(next_id, st)
+
     def _on_playlist_complete(self, playlist_id: str):
-        # mark current processing finished; do not trigger next fetch here because
-        # we already pipeline the next fetch right after fetching completes.
+        # mark current processing finished
         if self.currently_processing_id == playlist_id:
             self.currently_processing_id = None
+
+        # If there's a processing queue and this playlist just completed matching,
+        # move to the next playlist
+        if self.processing_queue:
+            all_done = all(t.progress >= 100 for t in self.playlists[playlist_id].tracks)
+            if all_done:
+                self._start_next_matching_playlist()
 
     # ---- per-track matching ----
     def _match_track_async(self, playlist_id: str, tstate: TrackState):
