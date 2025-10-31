@@ -16,13 +16,31 @@ from services.tidal import Tidal
 def _match_spotify_items_to_tidal_ids(td: Tidal, items: list[SpotifyTrack]) -> list[str]:
     matched_ids: list[str] = []
     total = len(items)
-    for idx, it in enumerate[SpotifyTrack](items, start=1):
-        sp_track = it.name
-        sp_name = sp_track.name
-        sp_artists = sp_track.artists
-        sp_dur = sp_track.duration_ms
-        sp_isrc = sp_track.external_ids.get("isrc")
-        sp_album = sp_track.album.name
+    for idx, it in enumerate(items, start=1):
+        # Support both raw Spotify API dict items and model instances
+        # Playlist/saved items from Spotify API are typically shaped like {"track": {...}}
+        if isinstance(it, dict):
+            sp_track = it.get("track") or it
+            sp_name = (sp_track or {}).get("name")
+            sp_artists = (sp_track or {}).get("artists")
+            sp_dur = (sp_track or {}).get("duration_ms")
+            external_ids = (sp_track or {}).get("external_ids") or {}
+            sp_isrc = external_ids.get("isrc")
+            album_obj = (sp_track or {}).get("album") or {}
+            sp_album = album_obj.get("name")
+        else:
+            sp_track = it
+            sp_name = getattr(sp_track, "name", None)
+            sp_artists = getattr(sp_track, "artists", None)
+            sp_dur = getattr(sp_track, "duration_ms", None)
+            external_ids = getattr(sp_track, "external_ids", {}) or {}
+            sp_isrc = external_ids.get("isrc")
+            album_obj = getattr(sp_track, "album", {}) or {}
+            sp_album = (
+                album_obj.get("name")
+                if isinstance(album_obj, dict)
+                else getattr(album_obj, "name", None)
+            )
 
         best = td.resolve_best_match(
             isrc=sp_isrc,
@@ -86,8 +104,16 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
             print("No Spotify playlists found for this user.")
         else:
             for pl in playlists:
-                pid = pl.id
-                name = pl.name or pid
+                # Handle dict-shaped playlists returned by services.spotify
+                if isinstance(pl, dict):
+                    pid = pl.get("id")
+                    name = pl.get("name") or pid or "Spotify Playlist"
+                else:
+                    pid = getattr(pl, "id", None)
+                    name = getattr(pl, "name", None) or pid or "Spotify Playlist"
+                if not pid:
+                    print("  Skipping playlist without id")
+                    continue
                 print(f"Processing playlist: {name}")
                 try:
                     items = sp.get_playlist_tracks(pid)
