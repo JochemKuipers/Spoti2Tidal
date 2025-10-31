@@ -462,6 +462,10 @@ class MainWindow(QMainWindow):
         self.btn_reload.clicked.connect(self._load_spotify_playlists)
         left_layout.addWidget(self.btn_reload)
 
+        self.btn_match_all = QPushButton("Match All Playlists")
+        self.btn_match_all.clicked.connect(self._match_all_playlists)
+        left_layout.addWidget(self.btn_match_all)
+
         self.playlist_list = QListWidget()
         self.playlist_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.playlist_list.currentItemChanged.connect(self._on_playlist_selected)
@@ -551,6 +555,10 @@ class MainWindow(QMainWindow):
                 hdr = QLabel(f"<h2>{name}</h2>")
                 hdr.setTextFormat(Qt.TextFormat.RichText)
                 header_row.addWidget(hdr, 1)
+                btn_match = QPushButton("Match Playlist")
+                btn_match.setToolTip("Fetch tracks and match them with TIDAL")
+                btn_match.clicked.connect(functools.partial(self._match_playlist, pid or "Unknown"))
+                header_row.addWidget(btn_match, 0)
                 btn_sync = QPushButton("Sync to TIDAL")
                 btn_sync.setToolTip("Create a TIDAL playlist and add all matched tracks")
                 # bind handler later when we have state dict key
@@ -586,9 +594,7 @@ class MainWindow(QMainWindow):
             # Select first by default
             if self.playlist_list.count() > 0:
                 self.playlist_list.setCurrentRow(0)
-            # Enqueue playlists for processing and start the first automatically
-            if order_ids:
-                self._enqueue_playlists(order_ids)
+            # Don't automatically start matching - wait for user to click buttons
 
         def on_error(e: Exception):
             QMessageBox.critical(self, "Spotify", f"Failed to load playlists: {e}")
@@ -646,6 +652,12 @@ class MainWindow(QMainWindow):
     # ---- per-playlist flow ----
     def _start_playlist_sync(self, playlist_id: str):
         st = self.playlists[playlist_id]
+        # Prevent starting if already in progress
+        if st.started and st.tracks:
+            # If already started and tracks are loaded, just start matching if not already done
+            if not st.completed:
+                self._start_matching_for_playlist(playlist_id, st)
+            return
         st.started = True
         st.progress_bar.setValue(0)
         st.progress_bar.setFormat("Fetching tracks… %p%")
@@ -686,11 +698,6 @@ class MainWindow(QMainWindow):
         def on_tracks_error(e: Exception):
             QMessageBox.critical(self, "Spotify", f"Failed to fetch tracks: {e}")
             st.started = False
-            # On fetch error, continue pipeline with next playlist to avoid stalling.
-            try:
-                self._start_next_in_queue()
-            except Exception:
-                pass
 
         run_in_background(
             self.fetch_pool,
@@ -699,6 +706,30 @@ class MainWindow(QMainWindow):
             on_error=on_tracks_error,
             on_progress=on_tracks_progress,
         )
+
+    def _match_playlist(self, playlist_id: str):
+        """Manually trigger matching for a single playlist."""
+        st = self.playlists.get(playlist_id)
+        if not st:
+            return
+        # If tracks are already loaded, just start matching
+        if st.tracks:
+            # Check if matching is already in progress
+            if any(t.progress > 0 and t.progress < 100 for t in st.tracks):
+                # Already matching, do nothing
+                return
+            # Reset completion status if previously completed, to allow re-matching
+            st.completed = False
+            self._start_matching_for_playlist(playlist_id, st)
+        elif not st.started:
+            # Not started yet, start the full sync process (fetch + match)
+            self._start_playlist_sync(playlist_id)
+        # If started but tracks not yet loaded, matching will start automatically when fetch completes
+
+    def _match_all_playlists(self):
+        """Manually trigger matching for all playlists."""
+        for playlist_id in self.playlists.keys():
+            self._match_playlist(playlist_id)
 
     # ---- transfer to TIDAL ----
     def _transfer_to_tidal(self, playlist_id: str):
@@ -825,12 +856,6 @@ class MainWindow(QMainWindow):
         # Begin matching concurrently
         for tstate in st.tracks:
             self._match_track_async(playlist_id, tstate)
-        # Pipeline: as soon as this playlist finished fetching, start fetching the next one
-        # while this one is still matching.
-        try:
-            self._start_next_in_queue()
-        except Exception:
-            pass
 
     def _build_track_view_for_playlist(self, playlist_id: str, st: PlaylistState):
         """Build virtualized track view - instant, no widgets to create!"""
