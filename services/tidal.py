@@ -81,9 +81,6 @@ class TokenBucketRateLimiter:
         self.recent_rate_limit_time = now
         # Reduce rate multiplier temporarily (slow down)
         self.current_rate_multiplier = max(0.3, self.current_rate_multiplier * 0.7)
-        logging.getLogger(__name__).warning(
-            f"Rate limit hit. Adjusting rate multiplier to {self.current_rate_multiplier:.2f}"
-        )
 
     def record_success(self) -> None:
         """Record a successful request - gradually increase rate if we're being too conservative."""
@@ -526,12 +523,20 @@ class Tidal:
     @staticmethod
     def _normalize_text(text: str) -> str:
         try:
-            # Only strip feat/with patterns,
-            # don't remove content in parentheses/brackets unconditionally
+            # Remove "feat"/"ft"/"with" (case insensitive), including any leading space, wherever it appears
+            # e.g., "PURGE ft. Siiickbrain" => "PURGE"
             text = re.sub(
-                r"\s*[\[(]\s*(feat\.?|with\.?)\s.*?[])]", "", text, flags=re.IGNORECASE
-            ).strip()
-            text = re.sub(r"\s+(feat\.?|with\.?)\s.*$", "", text, flags=re.IGNORECASE).strip()
+                r"\s*[\[(]?\s*(?:feat\.?|ft\.?|with)\s+[^)\]]*[\])]?\.?",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
+            # Remove trailing "feat"/"ft"/"with" just before end, even if not in parens
+            text = re.sub(r"\s+(?:feat\.?|ft\.?|with)\s+.*$", "", text, flags=re.IGNORECASE)
+            # Remove " - from <something>" or " – from <something>" at the end (special for GT tracks etc.)
+            text = re.sub(r"\s*[-–]\s*from\s+.*$", "", text, flags=re.IGNORECASE)
+            # Clean up leftover brackets and whitespace
+            text = text.strip(" []()").strip()
         except Exception as e:
             logging.getLogger(__name__).error(f"Error cleaning name: {e}")
             raise e
