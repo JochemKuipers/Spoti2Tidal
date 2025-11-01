@@ -524,7 +524,14 @@ class Tidal:
     def _normalize_text(text: str) -> str:
         try:
             # Remove "feat"/"ft"/"with" (case insensitive), including any leading space, wherever it appears
-            # e.g., "PURGE ft. Siiickbrain" => "PURGE"
+            # Remove (w/ ...) or [w/ ...] in title for normalizing tracks like "I've Been Waiting (w/ ILoveMakonnen & Fall Out Boy)"
+            text = re.sub(
+                r"\s*[\[(]\s*w/[^)\]]*[\])]",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
+            # Remove parenthetical/bracketed "with", "feat", "ft", etc. (already handled above but just in case)
             text = re.sub(
                 r"\s*[\[(]?\s*(?:feat\.?|ft\.?|with)\s+[^)\]]*[\])]?\.?",
                 "",
@@ -532,9 +539,11 @@ class Tidal:
                 flags=re.IGNORECASE,
             )
             # Remove trailing "feat"/"ft"/"with" just before end, even if not in parens
-            text = re.sub(r"\s+(?:feat\.?|ft\.?|with)\s+.*$", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s+(?:feat\.?|ft\.?|with|w/)\s+.*$", "", text, flags=re.IGNORECASE)
             # Remove " - from <something>" or " – from <something>" at the end (special for GT tracks etc.)
             text = re.sub(r"\s*[-–]\s*from\s+.*$", "", text, flags=re.IGNORECASE)
+            # Just filter out the words "- og version" from any title, anywhere (case insensitive)
+            text = re.sub(r"\s*-\s*og version", "", text, flags=re.IGNORECASE)
             # Clean up leftover brackets and whitespace
             text = text.strip(" []()").strip()
         except Exception as e:

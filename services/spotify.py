@@ -190,7 +190,12 @@ class Spotify:
                     if res is None:
                         self.logger.error("Failed to fetch Spotify playlist tracks")
                         return offset, [], "response is None"
-                    return offset, res.get("items", []), None
+                    # Filter out local files
+                    filtered_items = [
+                        item for item in res.get("items", [])
+                        if not item.get("is_local")
+                    ]
+                    return offset, filtered_items, None
                 except Exception as e:
                     msg = str(e).lower()
                     if "429" in msg or "too many" in msg or "rate" in msg:
