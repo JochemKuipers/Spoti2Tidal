@@ -169,7 +169,6 @@ class Spotify:
         if response is None:
             self.logger.error("Failed to fetch Spotify playlist tracks")
             return []
-        self.logger.info(f"Response: {response}")
         total = response.get("total", 0)
 
         batch_size = 50
@@ -192,8 +191,7 @@ class Spotify:
                         return offset, [], "response is None"
                     # Filter out local files
                     filtered_items = [
-                        item for item in res.get("items", [])
-                        if not item.get("is_local")
+                        item for item in res.get("items", []) if not item.get("is_local")
                     ]
                     return offset, filtered_items, None
                 except Exception as e:

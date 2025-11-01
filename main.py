@@ -66,6 +66,7 @@ def run_cli(
     do_saved_tracks: bool,
     verbose: bool,
     playlist_name: str | None = None,
+    log_file: str | None = None,
 ) -> int:
     """Run the headless CLI flow.
 
@@ -74,7 +75,7 @@ def run_cli(
     - If do_sync and not dry_run: create a TIDAL playlist and add matched tracks
     - If playlist_name is provided, only process that specific playlist
     """
-    setup_logging(logging.INFO if verbose else logging.WARNING)
+    setup_logging(logging.INFO if verbose else logging.WARNING, log_file=log_file)
 
     sp = Spotify()
     td = Tidal()
@@ -222,6 +223,11 @@ def main():
         action="store_true",
         help="Enable verbose logging (DEBUG level)",
     )
+    parser.add_argument(
+        "--log-file",
+        help="Path to log file (logs will also be printed to console)",
+        default=None,
+    )
     args = parser.parse_args()
 
     # Run CLI mode only when explicitly requested
@@ -243,10 +249,11 @@ def main():
             do_saved_tracks=do_saved,
             verbose=args.verbose,
             playlist_name=args.playlist,
+            log_file=args.log_file,
         )
         sys.exit(code)
 
-    setup_logging()
+    setup_logging(log_file=args.log_file)
     app = QApplication(sys.argv)
     w = MainWindow()
     w.show()
