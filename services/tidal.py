@@ -784,12 +784,54 @@ class Tidal:
                 self.logger.info("No new tracks to add (all already present in favorites).")
                 return True
 
-            batch_size = 100
+            # TIDAL favorites API seems more strict - use smaller batch size than playlists
+            batch_size = 50
+            total_batches = (len(unique_track_ids) + batch_size - 1) // batch_size
+            successful_batches = 0
+            failed_batches = 0
+
             for i in range(0, len(unique_track_ids), batch_size):
                 batch = unique_track_ids[i : i + batch_size]
-                with _TidalAPIContext(requires_session_lock=False):
-                    favorites.add_track(batch)
-            return True
+                batch_num = (i // batch_size) + 1
+                try:
+                    with _TidalAPIContext(requires_session_lock=False):
+                        favorites.add_track(batch)
+                    successful_batches += 1
+                    tracks_processed = min(i + batch_size, len(unique_track_ids))
+                    if batch_num % 10 == 0 or batch_num == total_batches:
+                        self.logger.info(
+                            f"Progress: {batch_num}/{total_batches} batches added "
+                            f"({tracks_processed}/{len(unique_track_ids)} tracks processed)"
+                        )
+                except Exception as e:
+                    failed_batches += 1
+                    self.logger.warning(
+                        f"Failed to add batch {batch_num}/{total_batches} "
+                        f"({len(batch)} tracks): {e}"
+                    )
+                    # Try adding tracks one by one as fallback for this batch
+                    if len(batch) > 1:
+                        self.logger.info(f"Retrying batch {batch_num} track-by-track...")
+                        for track_id in batch:
+                            try:
+                                with _TidalAPIContext(requires_session_lock=False):
+                                    favorites.add_track([track_id])
+                            except Exception as single_error:
+                                self.logger.warning(
+                                    f"Failed to add track {track_id}: {single_error}"
+                                )
+
+            if failed_batches > 0:
+                self.logger.warning(
+                    f"Completed with {failed_batches} failed batches out of {total_batches} "
+                    f"({successful_batches} successful)"
+                )
+            else:
+                self.logger.info(
+                    f"Successfully added all {len(unique_track_ids)} tracks "
+                    f"in {total_batches} batches"
+                )
+            return failed_batches == 0
         except Exception as e:
             self.logger.exception(f"Failed to add tracks to TIDAL favorites: {e}")
             return False
