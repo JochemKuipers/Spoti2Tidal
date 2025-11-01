@@ -770,13 +770,10 @@ class MainWindow(QMainWindow):
         def do_transfer(progress_callback=None) -> tuple[bool, str | None]:
             # Create playlist if needed
             if not st.tidal_playlist_id:
-                created = self.tidal.create_playlist(name, description="Imported from Spotify")
-                if not created:
+                pl = self.tidal.get_or_create_playlist(name, description="Imported from Spotify")
+                if not pl:
                     return False, "Failed to create TIDAL playlist"
-                st.tidal_playlist_id = getattr(created, "id", None)
-            pid = st.tidal_playlist_id
-            if not pid:
-                return False, "No TIDAL playlist id"
+                st.tidal_playlist_id = str(pl.id)
             # Add in batches with progress
             batch_size = 50
             total = len(ids)
@@ -784,7 +781,9 @@ class MainWindow(QMainWindow):
 
             for i in range(0, total, batch_size):
                 batch = ids[i : i + batch_size]
-                ok = self.tidal.add_tracks_to_playlist(pid, [str(t) for t in batch])
+                ok = self.tidal.add_tracks_to_playlist(
+                    st.tidal_playlist_id, [str(t) for t in batch]
+                )
                 added += len(batch) if ok else 0
                 if progress_callback:
                     progress_callback(min(99, int(added / total * 100)))

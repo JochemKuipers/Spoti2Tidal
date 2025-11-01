@@ -523,28 +523,21 @@ class Tidal:
     @staticmethod
     def _normalize_text(text: str) -> str:
         try:
-            # Remove "feat"/"ft"/"with" (case insensitive), including any leading space, wherever it appears
-            # Remove (w/ ...) or [w/ ...] in title for normalizing tracks like "I've Been Waiting (w/ ILoveMakonnen & Fall Out Boy)"
             text = re.sub(
                 r"\s*[\[(]\s*w/[^)\]]*[\])]",
                 "",
                 text,
                 flags=re.IGNORECASE,
             )
-            # Remove parenthetical/bracketed "with", "feat", "ft", etc. (already handled above but just in case)
             text = re.sub(
                 r"\s*[\[(]?\s*(?:feat\.?|ft\.?|with)\s+[^)\]]*[\])]?\.?",
                 "",
                 text,
                 flags=re.IGNORECASE,
             )
-            # Remove trailing "feat"/"ft"/"with" just before end, even if not in parens
             text = re.sub(r"\s+(?:feat\.?|ft\.?|with|w/)\s+.*$", "", text, flags=re.IGNORECASE)
-            # Remove " - from <something>" or " – from <something>" at the end (special for GT tracks etc.)
             text = re.sub(r"\s*[-–]\s*from\s+.*$", "", text, flags=re.IGNORECASE)
-            # Just filter out the words "- og version" from any title, anywhere (case insensitive)
             text = re.sub(r"\s*-\s*og version", "", text, flags=re.IGNORECASE)
-            # Clean up leftover brackets and whitespace
             text = text.strip(" []()").strip()
         except Exception as e:
             logging.getLogger(__name__).error(f"Error cleaning name: {e}")
@@ -709,9 +702,18 @@ class Tidal:
         return best_track
 
     # ---- playlist management ----
+    def get_or_create_playlist(
+        self, name: str, description: str = ""
+    ) -> tidalapi.playlist.Playlist | tidalapi.playlist.UserPlaylist:
+        playlists = self.get_user_playlists()
+        for pl in playlists:
+            if pl.name == name:
+                return pl
+        return self.create_playlist(name, description)
+
     def create_playlist(
         self, name: str, description: str = ""
-    ) -> tidalapi.playlist.UserPlaylist | None:
+    ) -> tidalapi.playlist.Playlist | tidalapi.playlist.UserPlaylist:
         self.logger.info(f"Creating TIDAL playlist: {name}")
         try:
             with _TidalAPIContext(requires_session_lock=True):
@@ -719,7 +721,7 @@ class Tidal:
                 return user.create_playlist(title=name, description=description)
         except Exception as e:
             self.logger.exception(f"Failed to create TIDAL playlist {name}: {e}")
-            return None
+            raise e
 
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> bool:
         self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL playlist {playlist_id}")
@@ -728,10 +730,25 @@ class Tidal:
                 playlist = cast(_PlaylistProtocol, self.session.playlist(playlist_id))
             if not track_ids:
                 return True
+
+            # Fetch current playlist track IDs to prevent duplicates
+            try:
+                current_ids = set(self.get_playlist_track_ids(playlist_id))
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not fetch current track ids; proceeding to add all. Error: {e}"
+                )
+                current_ids = set()
+
+            new_track_ids = [tid for tid in track_ids if str(tid) not in current_ids]
+            if not new_track_ids:
+                self.logger.info("No new tracks to add (all already present in playlist).")
+                return True
+
             # TIDAL API supports adding in batches
             batch_size = 50
-            for i in range(0, len(track_ids), batch_size):
-                batch = track_ids[i : i + batch_size]
+            for i in range(0, len(new_track_ids), batch_size):
+                batch = new_track_ids[i : i + batch_size]
                 with _TidalAPIContext(requires_session_lock=False):
                     playlist.add(batch)
             return True
@@ -740,17 +757,36 @@ class Tidal:
             return False
 
     def add_tracks_to_favorites(self, track_ids: list[str]) -> bool:
-        self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL favorites")
+        self.logger.info(f"Adding {len(track_ids)} tracks to TIDAL favorites (deduplicating)")
         try:
             if not track_ids:
                 return True
             user = cast(_UserProtocol, self.session.user)
             favorites = user.favorites
-            # The installed tidalapi supports add_track(list[str]|str)
-            # Batch to avoid overly long requests
+
+            # Get current favorite track ids to avoid duplicates
+            try:
+                with _TidalAPIContext(requires_session_lock=False):
+                    # .tracks gives all track objects; extract their IDs
+                    current_favorites = set(
+                        str(getattr(t, "id", ""))
+                        for t in favorites.tracks()
+                        if getattr(t, "id", None)
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not fetch current favorite track ids; proceeding to add all. Error: {e}"
+                )
+                current_favorites = set()
+
+            unique_track_ids = [tid for tid in track_ids if str(tid) not in current_favorites]
+            if not unique_track_ids:
+                self.logger.info("No new tracks to add (all already present in favorites).")
+                return True
+
             batch_size = 100
-            for i in range(0, len(track_ids), batch_size):
-                batch = track_ids[i : i + batch_size]
+            for i in range(0, len(unique_track_ids), batch_size):
+                batch = unique_track_ids[i : i + batch_size]
                 with _TidalAPIContext(requires_session_lock=False):
                     favorites.add_track(batch)
             return True

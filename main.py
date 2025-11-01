@@ -59,12 +59,20 @@ def _match_spotify_items_to_tidal_ids(td: Tidal, items: list[SpotifyTrack]) -> l
     return matched_ids
 
 
-def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose: bool) -> int:
+def run_cli(
+    dry_run: bool,
+    *,
+    do_playlists: bool,
+    do_saved_tracks: bool,
+    verbose: bool,
+    playlist_name: str | None = None,
+) -> int:
     """Run the headless CLI flow.
 
     - Always fetch Spotify playlists and resolve TIDAL matches
     - If dry_run: print a summary and exit without writing to TIDAL
     - If do_sync and not dry_run: create a TIDAL playlist and add matched tracks
+    - If playlist_name is provided, only process that specific playlist
     """
     setup_logging(logging.INFO if verbose else logging.WARNING)
 
@@ -103,6 +111,22 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
         if not playlists:
             print("No Spotify playlists found for this user.")
         else:
+            # If a specific playlist name is provided, filter to only that playlist
+            if playlist_name:
+                matching_playlists = []
+                for pl in playlists:
+                    if isinstance(pl, dict):
+                        name = pl.get("name") or ""
+                    else:
+                        name = getattr(pl, "name", None) or ""
+                    if name.lower() == playlist_name.lower():
+                        matching_playlists.append(pl)
+
+                if not matching_playlists:
+                    print(f"Playlist '{playlist_name}' not found in your Spotify playlists.")
+                    return 1
+                playlists = matching_playlists
+
             for pl in playlists:
                 # Handle dict-shaped playlists returned by services.spotify
                 if isinstance(pl, dict):
@@ -128,22 +152,13 @@ def run_cli(dry_run: bool, *, do_playlists: bool, do_saved_tracks: bool, verbose
                     continue
 
                 if matched_ids:
-                    created = td.create_playlist(name, description="Synced from Spotify")
-                    if not created:
-                        print("  Failed to create TIDAL playlist; skipping.")
-                        continue
-                    tpid = getattr(created, "id", None)
-                    if not tpid:
-                        print("  No TIDAL playlist id returned.")
-                        continue
-                    ok = td.add_tracks_to_playlist(tpid, matched_ids)
-                    if ok:
-                        print(f"  Added {len(matched_ids)} tracks to TIDAL playlist '{name}'.")
-                        overall_added += len(matched_ids)
-                    else:
+                    pl = td.get_or_create_playlist(name, description="Synced from Spotify")
+                    ok = td.add_tracks_to_playlist(str(pl.id), matched_ids)
+                    if not ok:
                         print("  Failed to add tracks to TIDAL playlist.")
-                else:
-                    print("  No matches to add for this playlist")
+                    else:
+                        overall_added += len(matched_ids)
+                        print(f"  Added {len(matched_ids)} tracks to TIDAL playlist")
 
     if do_saved_tracks:
         print("Processing saved tracks (Liked Songs)")
@@ -188,6 +203,11 @@ def main():
         help="Resolve matches and show summary without creating playlists or adding tracks",
     )
     parser.add_argument(
+        "--playlist",
+        help="Name of a specific Spotify playlist to transfer (only transfers this playlist)",
+        default=None,
+    )
+    parser.add_argument(
         "--playlists",
         action="store_true",
         help="Sync Spotify playlists to TIDAL playlists",
@@ -206,16 +226,23 @@ def main():
 
     # Run CLI mode only when explicitly requested
     if args.cli:
-        do_playlists = args.playlists
-        do_saved = args.saved_tracks
+        # If --playlist is specified, enable playlist mode automatically
+        do_playlists = args.playlists or (args.playlist is not None)
+        do_saved = args.saved_tracks and (
+            args.playlist is None
+        )  # Don't do saved tracks if specific playlist is requested
+
+        # Default behavior: transfer all playlists and saved tracks
         if not do_playlists and not do_saved:
             do_playlists = True
             do_saved = True
+
         code = run_cli(
             dry_run=args.dry_run,
             do_playlists=do_playlists,
             do_saved_tracks=do_saved,
             verbose=args.verbose,
+            playlist_name=args.playlist,
         )
         sys.exit(code)
 
