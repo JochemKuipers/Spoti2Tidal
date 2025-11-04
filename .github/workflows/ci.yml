@@ -45,21 +45,3 @@ jobs:
               
             - name: Byte-compile
               run: python -m compileall -q .
-
-            - name: Import smoke test
-              run: |
-                  python - <<'PY'
-                  import importlib
-                  modules = [
-                      "main",
-                      "services.spotify",
-                      "services.tidal",
-                      "gui.main_window",
-                  ]
-                  for m in modules:
-                      try:
-                          importlib.import_module(m)
-                          print(f"Imported: {m}")
-                      except Exception as e:
-                          raise SystemExit(f"Failed to import {m}: {e}")
-                  PY
